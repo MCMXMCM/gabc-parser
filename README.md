@@ -27,8 +27,8 @@ Requires Swift 6 tools (Xcode 16 or later) and iOS 17 or macOS 14.
 
 ## Installation
 
-The repository is private: Xcode must be signed in to a GitHub account that
-can read it (Settings ▸ Accounts).
+Add the package in Xcode (File ▸ Add Package Dependencies…, with
+`https://github.com/MCMXMCM/gabc-parser.git`) or in `Package.swift`:
 
 ```swift
 dependencies: [
