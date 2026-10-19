@@ -1,7 +1,9 @@
 # gabc-parser
 
 Parse [GABC](https://gregorio-project.github.io/gabc/) chant notation in
-Swift, engrave it natively, and draw it in SwiftUI.
+Swift, engrave it natively, and draw it in SwiftUI; or do the same in Kotlin,
+and draw it with Jetpack Compose on Android (see
+[Kotlin and Android](#kotlin-and-android)).
 
 GABC is the plain-text notation of the Gregorio project, in which GregoBase
 and most digital chant sources are written. This package reads a score into
@@ -157,6 +159,97 @@ event for each pitch letter written; the parse fails if the notation writes
 more or fewer. Without a timeline, the parser names the notes and syllables
 itself, one syllable for each notation group that writes a note.
 
+## Kotlin and Android
+
+`kotlin/` holds a native Kotlin version of the package, built the same way and
+kept to the same behaviour: a port of the Swift sources, carrying the Swift
+tests, engraving from the same generated glyph catalog.
+
+| Module | The Swift library | What it gives you |
+| --- | --- | --- |
+| `gabc-parser` | `GABCParser` | `GregorianScoreParser`: GABC to a `GregorianScore`. Plain Kotlin, the JDK only. |
+| `gabc-layout` | `GABCLayout` | `GregorianEngravingLayoutEngine`: a score to a `GregorianLayout` of placed glyphs, strokes and lyrics, in points; glyph outlines as display lists; hit-testing and highlights. Plain Kotlin. |
+| `gabc-lyric-font` | `GABCLyricFont` | EB Garamond for Android, and a measurer of lyrics in it, for an app that does not bundle the font itself. |
+| `gabc-compose` | `GABCSwiftUI` | `GregorianScoreView` and `GregorianScoreCanvas` composables. |
+
+Each module brings in the one it builds on. An app that bundles EB Garamond
+itself, and draws the layout itself, needs only `gabc-layout`, with a
+`GregorianLyricMeasurer` of its own. The layout's geometry is its own
+(`GregorianPoint`, `GregorianSize`, `GregorianRect`), named as Compose names
+its own; `gabc-compose` converts it (`toOffset()`, `toRect()`). A layout point
+is drawn as a density-independent pixel. Names follow Kotlin's conventions:
+`eventId` for `eventID`, `GregorianNoteShape.Virga` for `.virga`.
+
+The parser and the layout need Java 17; the Android libraries, Android 8
+(API 26).
+
+### Installation
+
+The libraries are built by [JitPack](https://jitpack.io) from this
+repository's tags. In `settings.gradle.kts`:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven("https://jitpack.io")
+    }
+}
+```
+
+and in the app's `build.gradle.kts`:
+
+```kotlin
+dependencies {
+    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.3.0")
+}
+```
+
+### Drawing a score
+
+```kotlin
+@Composable
+fun OpeningVersicle() {
+    val gabc = """name: Deus in adiutorium;
+        %%
+        (c4) De(f)us(g) in(g) ad(g)ju(h)tó(g)ri(f)um(g) me(h)um(g) in(f)tén(g)de.(f.) (::)"""
+    var sungNote by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+        GregorianScoreView(gabc, highlightedEventId = sungNote, onTapNeume = { neume ->
+            sungNote = neume.eventIds.first()
+        })
+    }
+}
+```
+
+The view lays the score out across the width it is offered and is as tall as
+its staffs, as the SwiftUI view is. Colors come from
+`GregorianScoreStyleProvider(GregorianScoreStyle(ink, rubric, highlight))`,
+warm black and red by default and lightened in a dark theme.
+`GregorianLayoutMetrics.lyricScale(fontScale)` follows the system's font size.
+For long documents, prepare scores in the background
+(`GregorianPreparedScore.prepare(context, score, width)`) and draw them with
+`GregorianScoreCanvas`.
+
+### Without Compose
+
+```kotlin
+val score = GregorianScoreParser.parse(gabc)
+val layout = GregorianEngravingLayoutEngine(GregorianLyricFont.measurer(context))
+    .layout(score, width = 600f)
+for (glyph in layout.glyphs) {
+    // glyph.path: the outline's display lists in layout coordinates. Fill
+    // them with the even-odd rule. glyph.transform sets the catalog's own
+    // outline (GregorianGlyphCatalog.definition(name).paths) in the frame.
+}
+// Each lyric: draw lyric.text in the face lyric.fontName names, at
+// lyric.fontSize, its top left at lyric.origin.
+```
+
+On the JVM, without Android, give the engine a `GregorianLyricMeasurer` that
+measures with the JDK's text layout or the server's own.
+
 ## GABC coverage
 
 - The header up to `%%` is skipped; text without `%%` is read as notation.
@@ -184,15 +277,23 @@ the parse with `GregorianScoreParserError.unsupportedToken` and its offset.
 
 ```sh
 swift test
+cd kotlin && ./gradlew test                   # the parser, the layout, the drawing
+cd kotlin && ./gradlew connectedAndroidTest   # the font and the views, on a device
 ```
 
-The glyph catalog is generated from Exsurge's SVG glyph outlines; to
-regenerate it, check Exsurge out at the revision named in
-`THIRD_PARTY_NOTICES.md` and run
+The Kotlin tests read the Swift tests' fixtures and measure lyrics in the
+font `GABCLyricFont` carries.
+
+The glyph catalog is generated from Exsurge's SVG glyph outlines, for Swift
+and Kotlin alike; to regenerate both, check Exsurge out at the revision named
+in `THIRD_PARTY_NOTICES.md` and run
 `make generate-glyphs EXSURGE_GLYPHS=/path/to/exsurge/src/Exsurge.Glyphs.js`.
+That revision is no longer published, but `src/Exsurge.Glyphs.js` has not
+changed since `eb78bf2` (June 2026), which reproduces the catalog byte for
+byte.
 
 ## License
 
 MIT; see `LICENSE`. The glyph geometry is derived from Exsurge (MIT) and the
-EB Garamond bundled in `GABCLyricFont` is under the SIL Open Font License 1.1;
-see `THIRD_PARTY_NOTICES.md`.
+EB Garamond bundled in `GABCLyricFont` and `gabc-lyric-font` is under the SIL
+Open Font License 1.1; see `THIRD_PARTY_NOTICES.md`.

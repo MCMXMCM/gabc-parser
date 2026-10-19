@@ -6,10 +6,11 @@ distributes the following material under its own terms.
 ## Exsurge
 
 The Gregorian glyph geometry in
-`Sources/GABCLayout/GeneratedGregorianGlyphCatalog.swift` is converted from
-the canonical Gregorian SVG glyph outlines of Exsurge (the maintained
-bbloomf fork, revision `0c39f61df0e7c843f467250976338cac62f94e62`) by
-`Scripts/generate-glyphs.mjs`. No Exsurge JavaScript, web view or font is
+`Sources/GABCLayout/GeneratedGregorianGlyphCatalog.swift` and
+`kotlin/gabc-layout/src/main/kotlin/io/github/mcmxmcm/gabc/layout/GeneratedGregorianGlyphCatalog.kt`
+is converted from the canonical Gregorian SVG glyph outlines of Exsurge (the
+maintained bbloomf fork, revision `0c39f61df0e7c843f467250976338cac62f94e62`)
+by `Scripts/generate-glyphs.mjs`. No Exsurge JavaScript, web view or font is
 included.
 
 Author: Fr. Matthew Spencer, OSJ <mspencer@osjusa.org>
@@ -41,4 +42,6 @@ THE SOFTWARE.
 The lyric typeface, `Sources/GABCLyricFont/Resources/EBGaramond-VariableFont_wght.ttf`,
 is Copyright 2017 The EB Garamond Project Authors and is licensed under the
 SIL Open Font License 1.1, not under this package's MIT license. The license
-travels with the font as `Sources/GABCLyricFont/Resources/EBGaramond-OFL.txt`.
+travels with the font as `Sources/GABCLyricFont/Resources/EBGaramond-OFL.txt`;
+the Kotlin `gabc-lyric-font` library carries the same two files as Android
+assets.

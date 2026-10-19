@@ -1,0 +1,8 @@
+# JitPack builds the Kotlin libraries in kotlin/ from a tag, as
+# com.github.MCMXMCM.gabc-parser:<module>:<tag>, and serves what the build
+# publishes to the local Maven repository. The Swift package needs nothing
+# from it.
+jdk:
+  - openjdk17
+install:
+  - cd kotlin && ./gradlew publishToMavenLocal -Pversion="$VERSION"
