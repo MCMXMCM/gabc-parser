@@ -342,7 +342,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             )
         )
         let lyricFontName = metrics.lyricFontName
-        GregorianLyricFont.registerBundledFont()
         let width = max(240, requestedWidth)
         let glyphScale = notationScale / 16
         let staffStep = 100 * glyphScale // one GABC pitch step / half staff-space

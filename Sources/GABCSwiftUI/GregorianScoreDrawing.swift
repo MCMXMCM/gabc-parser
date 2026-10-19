@@ -20,6 +20,8 @@ public struct GregorianPreparedScore: Sendable {
         metrics: GregorianLayoutMetrics = GregorianLayoutMetrics(),
         mode: String? = nil
     ) {
+        // The lyrics are measured and drawn in EB Garamond.
+        GregorianLyricFont.registerBundledFont()
         self.init(
             score: score,
             layout: GregorianEngravingLayoutEngine().layout(

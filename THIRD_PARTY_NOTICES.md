@@ -38,7 +38,7 @@ THE SOFTWARE.
 
 ## EB Garamond
 
-The lyric typeface, `Sources/GABCLayout/Resources/EBGaramond-VariableFont_wght.ttf`,
+The lyric typeface, `Sources/GABCLyricFont/Resources/EBGaramond-VariableFont_wght.ttf`,
 is Copyright 2017 The EB Garamond Project Authors and is licensed under the
 SIL Open Font License 1.1, not under this package's MIT license. The license
-travels with the font as `Sources/GABCLayout/Resources/EBGaramond-OFL.txt`.
+travels with the font as `Sources/GABCLyricFont/Resources/EBGaramond-OFL.txt`.

@@ -1,8 +1,14 @@
 import CoreText
 import GABCLayout
+import GABCLyricFont
 import XCTest
 
 final class LyricFontTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        GregorianLyricFont.registerBundledFont()
+    }
+
     func testBundledEBGaramondCanBeFoundByName() {
         XCTAssertTrue(GregorianLyricFont.registerBundledFont())
         let font = CTFontCreateWithName(GregorianLyricFont.defaultName as CFString, 21, nil)

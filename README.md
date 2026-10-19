@@ -15,11 +15,13 @@ in the rendering path.
 | Library | What it gives you |
 | --- | --- |
 | `GABCParser` | `GregorianScoreParser`: GABC to a `GregorianScore`. Foundation only. |
-| `GABCLayout` | `GregorianEngravingLayoutEngine`: a score to a `GregorianLayout` of placed glyphs, strokes and lyrics; glyph outlines as `CGPath`; hit-testing and highlights. Bundles EB Garamond for the lyrics. |
-| `GABCSwiftUI` | `GregorianScoreView` and `GregorianScoreCanvas`. |
+| `GABCLayout` | `GregorianEngravingLayoutEngine`: a score to a `GregorianLayout` of placed glyphs, strokes and lyrics; glyph outlines as `CGPath`; hit-testing and highlights. |
+| `GABCLyricFont` | EB Garamond, the lyrics' face, and `GregorianLyricFont.registerBundledFont()`, for a client that does not bundle the font itself. |
+| `GABCSwiftUI` | `GregorianScoreView` and `GregorianScoreCanvas`. Registers EB Garamond before it lays out. |
 
 Each library re-exports the one it builds on, so `import GABCSwiftUI` is all
-a SwiftUI app needs.
+a SwiftUI app needs. An app that bundles EB Garamond itself, and uses
+`GABCLayout` without `GABCSwiftUI`, need not link `GABCLyricFont`.
 
 Requires Swift 6 tools (Xcode 16 or later) and iOS 17 or macOS 14.
 
@@ -30,7 +32,7 @@ can read it (Settings ▸ Accounts).
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.1.0")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.2.0")
 ],
 targets: [
     .target(
@@ -83,9 +85,10 @@ GregorianScoreView(gabc: gabc)
 
 `GregorianLayoutMetrics` sizes the staff (`notationScale`, 0.6 to 1.6) and
 the text (`lyricScale`); `GregorianLayoutMetrics.lyricScale(for:)` follows
-Dynamic Type. Lyrics are measured and drawn in the bundled EB Garamond.
-Another font can be named with `lyricFontName`; each placed lyric records the
-font it was measured in, and is drawn in it.
+Dynamic Type. Lyrics are measured and drawn in EB Garamond, which
+GABCSwiftUI registers from `GABCLyricFont`. Another font can be named with
+`lyricFontName`; each placed lyric records the font it was measured in, and is
+drawn in it. The face must be registered before a score is laid out.
 
 ### Long documents
 
@@ -109,7 +112,10 @@ with y running down, in points:
 
 ```swift
 import GABCLayout
+import GABCLyricFont
 
+// Unless the app registers EB Garamond itself.
+GregorianLyricFont.registerBundledFont()
 let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 600)
 for stroke in layout.strokes {
     context.move(to: stroke.start)
@@ -188,5 +194,5 @@ regenerate it, check Exsurge out at the revision named in
 ## License
 
 MIT; see `LICENSE`. The glyph geometry is derived from Exsurge (MIT) and the
-bundled EB Garamond is under the SIL Open Font License 1.1; see
-`THIRD_PARTY_NOTICES.md`.
+EB Garamond bundled in `GABCLyricFont` is under the SIL Open Font License 1.1;
+see `THIRD_PARTY_NOTICES.md`.
