@@ -1,7 +1,14 @@
 import GABCLayout
+import GABCLyricFont
 import XCTest
 
 final class ScoreHighlightTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // Lyrics are measured in EB Garamond only once it is registered.
+        GregorianLyricFont.registerBundledFont()
+    }
+
     func testTapResolvesToTheNeumeWhoseTargetHoldsIt() {
         let target = GregorianNeumePlacement(
             id: "event-1",

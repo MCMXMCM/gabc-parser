@@ -1,4 +1,5 @@
 import GABCLayout
+import GABCLyricFont
 import XCTest
 
 /// The checks a notation validator makes of every score in a corpus, made
@@ -23,6 +24,12 @@ final class EngravingInvariantTests: XCTestCase {
             "in(h) o(f)re(h) me(g)o.(f.) (::)"
         ].joined(separator: " ")
     ]
+
+    override func setUp() {
+        super.setUp()
+        // Lyrics are measured in EB Garamond only once it is registered.
+        GregorianLyricFont.registerBundledFont()
+    }
 
     func testScoresKeepTheirIdentityAndInkAtEveryWidth() throws {
         for gabc in Self.scores {

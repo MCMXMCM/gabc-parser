@@ -1,7 +1,14 @@
 import GABCLayout
+import GABCLyricFont
 import XCTest
 
 final class GregorianLayoutTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // Lyrics are measured in EB Garamond only once it is registered.
+        GregorianLyricFont.registerBundledFont()
+    }
+
     func testNotationAndLyricsScaleTogetherAcrossReaderRange() throws {
         let score = try parsedFixture(noteCount: 1)
         let engine = GregorianEngravingLayoutEngine()

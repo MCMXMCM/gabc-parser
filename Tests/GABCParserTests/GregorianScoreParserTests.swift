@@ -1,8 +1,15 @@
 import GABCLayout
+import GABCLyricFont
 import GABCParser
 import XCTest
 
 final class GregorianScoreParserTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // Lyrics are measured in EB Garamond only once it is registered.
+        GregorianLyricFont.registerBundledFont()
+    }
+
     func testSharedCompilerEngravingFixtures() throws {
         for fixture in try SharedFixture.all() {
             var noteIndex = 0
