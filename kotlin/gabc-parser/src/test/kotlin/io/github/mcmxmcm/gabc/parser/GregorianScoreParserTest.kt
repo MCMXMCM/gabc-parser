@@ -39,6 +39,29 @@ class GregorianScoreParserTest {
     }
 
     @Test
+    fun testLiquescentInclinatumEndsAnAncus() {
+        // `F~` is a diminished inclinatum, not a note of its own: `hGF~` is the ancus, a climacus whose last
+        // inclinatum is liquescent.
+        val score = GregorianScoreParser.parse("%% (c4) a(hGF~) b(hGF) (::)")
+
+        assertEquals(listOf(GregorianNeumeForm.Ancus, GregorianNeumeForm.Climacus), score.neumes.map { it.form })
+        val ancus = score.neumes.first()
+        assertEquals(
+            listOf(GregorianNoteShape.Punctum, GregorianNoteShape.Inclinatum, GregorianNoteShape.Inclinatum),
+            ancus.notes.map { it.shape },
+        )
+        assertEquals(GregorianLiquescence.Small, ancus.notes.last().liquescence)
+
+        val layout = GregorianEngravingLayoutEngine().layout(score, width = 390f)
+        assertTrue(
+            layout.glyphs.any {
+                it.eventId == ancus.notes.last().id &&
+                    it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.PunctumInclinatumLiquescent)
+            },
+        )
+    }
+
+    @Test
     fun testOnlyRAndR0MarkAHollowNote() {
         // r and r0 are hollow notes; r1 to r5 are signs written above a note.
         val gabc = "name: test; %% (c3) no(hr1)bis(hr) ló(hr0)rum(h.r3) (::)"

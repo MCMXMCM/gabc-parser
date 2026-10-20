@@ -708,6 +708,81 @@ final class GregorianLayoutTests: XCTestCase {
         )
     }
 
+    func testLedgerLinesFollowEachNotesPitch() throws {
+        let engine = GregorianEngravingLayoutEngine()
+        func ledgers(_ gabc: String) throws -> (GregorianLayout, [GregorianPlacedStroke]) {
+            let layout = engine.layout(score: try GregorianScoreParser.parse(gabc: gabc), width: 390)
+            return (layout, layout.strokes.filter {
+                if case .ledger = $0.kind { return true }
+                return false
+            })
+        }
+        let staffGap = 200.0 / 16
+
+        // A virga on the first ledger line above has its line, as a punctum
+        // there does, though its stem reaches down into the staff.
+        for gabc in ["%% (c4) a(l) (::)", "%% (c4) a(lv) (::)"] {
+            let (layout, lines) = try ledgers(gabc)
+            XCTAssertEqual(lines.count, 1, gabc)
+            XCTAssertEqual(try XCTUnwrap(lines.first).start.y, layout.staffs[0].frame.minY - staffGap, accuracy: 0.001, gabc)
+        }
+
+        // The low note of a porrectus, which its swash engraves, has its line
+        // below the staff, under that note's head.
+        let (layout, lines) = try ledgers("%% (c4) a(gbg) (::)")
+        let line = try XCTUnwrap(lines.first)
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(line.start.y, layout.staffs[0].frame.maxY + staffGap, accuracy: 0.001)
+        let low = try XCTUnwrap(layout.events.first { $0.eventID == "note-1" })
+        XCTAssertLessThan(line.start.x, low.frame.midX)
+        XCTAssertGreaterThan(line.end.x, low.frame.midX)
+    }
+
+    func testFlatCClefSetsItsFlatOnTheBItFlattens() throws {
+        let engine = GregorianEngravingLayoutEngine()
+        let glyphScale = 1.0 / 16
+        let staffGap = 200 * glyphScale
+        let flatDefinition = GregorianGlyphCatalog.definition(for: .flat)
+        for line in 1...4 {
+            let score = try GregorianScoreParser.parse(gabc: "%% (cb\(line)) a(g) (::)")
+            let layout = engine.layout(score: score, width: 390)
+            let staff = layout.staffs[0].frame
+            let clef = try XCTUnwrap(layout.glyphs.first { $0.kind == .cClef })
+            let flat = try XCTUnwrap(layout.glyphs.first { $0.kind == .flat })
+            let note = try XCTUnwrap(layout.glyphs.first { $0.eventID == "note-0" })
+
+            // On B, a step below the clef's line,
+            let flatScale = flat.frame.height / flatDefinition.bounds.height
+            let clefLineY = staff.minY + CGFloat(4 - line) * staffGap
+            XCTAssertEqual(
+                flat.frame.minY + flatDefinition.origin.y * flatScale,
+                clefLineY + staffGap / 2,
+                accuracy: 0.001,
+                "cb\(line)"
+            )
+            // after the clef and before the first note.
+            XCTAssertGreaterThan(flat.frame.minX, clef.frame.maxX, "cb\(line)")
+            XCTAssertLessThan(flat.frame.maxX, note.frame.minX, "cb\(line)")
+        }
+    }
+
+    func testCustosThatEndsAStaffStaysWithinItsSystem() throws {
+        // Each staff's custos shows the next staff's first note, here high
+        // above the staff, and its stem rises higher still.
+        let score = try GregorianScoreParser.parse(
+            gabc: "%% (c4) A(g) (z) B(m) (z) C(g) (z) D(l) (::)"
+        )
+        let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390)
+        let custodes = custosGlyphs(in: layout)
+        XCTAssertEqual(custodes.count, 3)
+        for custos in custodes {
+            XCTAssertTrue(
+                layout.staffs.contains { $0.systemFrame.contains(custos.frame) },
+                "\(custos.frame) outside \(layout.staffs.map(\.systemFrame))"
+            )
+        }
+    }
+
     func testWrittenCustosIsDrawnAsACustosAndOffersNoPlaceToBeginSinging() throws {
         let score = try parsedCustosFixture(
             "tó(h)ris.(f.) (f+::) (c4) O(h)rémus.(h.) (::)",

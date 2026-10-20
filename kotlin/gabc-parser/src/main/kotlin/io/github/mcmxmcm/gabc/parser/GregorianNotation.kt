@@ -132,8 +132,11 @@ public data class GregorianLyricMark(
     val style: GregorianLyricStyle,
     val startsWord: Boolean,
     val sourceRange: GregorianSourceRange,
+    /** The identifier of the score the mark was parsed in, if one was given. */
+    val scoreId: String? = null,
 ) {
-    val id: String get() = "lyric-mark-${sourceRange.lowerBound}-${sourceRange.upperBound}"
+    /** Named by where it is written, after its score, as the score's notes are: `lyric-mark-5-7`, or `kyrie-lyric-mark-5-7`. */
+    val id: String get() = "${scoreId?.let { "$it-" } ?: ""}lyric-mark-${sourceRange.lowerBound}-${sourceRange.upperBound}"
 }
 
 public sealed interface GregorianNotationElement {
@@ -227,7 +230,7 @@ public object GregorianScoreParser {
      */
     @Throws(GregorianScoreParserError::class)
     public fun parse(gabc: String, scoreId: String? = null): GregorianScore =
-        parse(gabc, EventSource.Numbered(scoreId?.let { "$it-" } ?: ""))
+        parse(gabc, EventSource.Numbered(scoreId))
 
     /**
      * Parses a GABC score whose notes a compiled timeline names, one event for each written note in order. The
@@ -242,7 +245,7 @@ public object GregorianScoreParser {
 
     private sealed interface EventSource {
         class Compiled(val events: List<ResolvedEvent>) : EventSource
-        class Numbered(val prefix: String) : EventSource
+        class Numbered(val scoreId: String?) : EventSource
     }
 
     private fun parse(gabc: String, source: EventSource): GregorianScore {
@@ -252,7 +255,8 @@ public object GregorianScoreParser {
         val body = comment.replace(gabc.substring(bodyStart), "")
         val offsets = CharacterOffsets(body)
         val compiledEvents = (source as? EventSource.Compiled)?.events
-        val eventPrefix = (source as? EventSource.Numbered)?.prefix ?: ""
+        val scoreId = (source as? EventSource.Numbered)?.scoreId
+        val eventPrefix = scoreId?.let { "$it-" } ?: ""
         // The syllable of each compiled event, by its name; the first event given a name keeps it.
         val compiledSyllables = compiledEvents?.let { events ->
             HashMap<String, String>().apply { for (event in events) getOrPut(event.id) { event.syllableId } }
@@ -299,6 +303,7 @@ public object GregorianScoreParser {
                         style = standaloneLyricStyle(displayLyric, parsedLyricStyle),
                         startsWord = startsWord,
                         sourceRange = GregorianSourceRange(offsets[cursor], offsets[open]),
+                        scoreId = scoreId,
                     ),
                 )
             }
@@ -544,9 +549,10 @@ public object GregorianScoreParser {
             val shape = when {
                 isCustos -> GregorianNoteShape.Custos
                 'w' in suffix || 'W' in suffix -> GregorianNoteShape.Quilisma
+                // A capital is an inclinatum, liquescent or not: `F~` is the diminished inclinatum that ends an ancus.
+                character.isUpperCase() -> GregorianNoteShape.Inclinatum
                 '<' in suffix || '>' in suffix || '~' in suffix -> GregorianNoteShape.Liquescent
                 'v' in suffix || 'V' in suffix -> GregorianNoteShape.Virga
-                character.isUpperCase() -> GregorianNoteShape.Inclinatum
                 'o' in suffix || 'O' in suffix -> GregorianNoteShape.Oriscus
                 's' in suffix || 'S' in suffix -> GregorianNoteShape.Stropha
                 else -> GregorianNoteShape.Punctum

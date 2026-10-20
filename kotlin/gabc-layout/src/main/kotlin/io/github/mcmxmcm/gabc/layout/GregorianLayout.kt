@@ -199,7 +199,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         val lines = breakLines(units, continuationAvailableWidth - initialColumn, continuationAvailableWidth, notationScale)
         val lineVerticalMetrics = lines.mapIndexed { lineIndex, lineUnits ->
             verticalMetrics(
-                lineUnits, staffStep, staffGap, notationScale, lyricHeight,
+                lineUnits, custosPitch(lineIndex, lines), glyphScale, staffStep, staffGap, notationScale, lyricHeight,
                 if (lineIndex == 0 && openingInitial != null) initialFontSize else null,
             )
         }
@@ -251,7 +251,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                 activeClef = clef
                 leadingClefCount += 1
             }
-            appendClef(activeClef, staffLeft + 2 * notationScale, staffTop, staffGap, glyphScale, glyphs)
+            appendClef(activeClef, staffLeft + 2 * notationScale, staffTop, staffGap, glyphScale, notationScale, glyphs)
 
             if (lineIndex == 0 && openingInitial != null) {
                 initials += GregorianPlacedInitial(
@@ -287,7 +287,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                         // The clefs a staff opens with are set at its head, and take no room in it.
                         if (unitIndex < leadingClefCount) continue
                         activeClef = element.clef
-                        appendClef(element.clef, x, staffTop, staffGap, glyphScale, glyphs)
+                        appendClef(element.clef, x, staffTop, staffGap, glyphScale, notationScale, glyphs)
                     }
                     is GregorianNotationElement.Accidental -> {
                         val y = staffCenter - (element.mark.pitch - 6) * staffStep
@@ -339,12 +339,9 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                 if (unitIndex in gapAdjustments.indices) x += gapAdjustments[unitIndex]
             }
 
-            // A custos written in the score (`f+`, as before a change of clef) already guides the eye to what
-            // follows; the staff that ends with one is not given another.
-            val endsWithWrittenCustos = lineUnits.mapNotNull { it.neume }.lastOrNull()?.notes?.lastOrNull()?.isCustos ?: false
-            val nextNote = lines.getOrNull(lineIndex + 1)?.firstNotNullOfOrNull { it.neume }?.notes?.firstOrNull()
-            if (!endsWithWrittenCustos && nextNote != null) {
-                val nextY = staffCenter - (nextNote.pitch - 6) * staffStep
+            val custosPitch = custosPitch(lineIndex, lines)
+            if (custosPitch != null) {
+                val nextY = staffCenter - (custosPitch - 6) * staffStep
                 // A staff too short to be closed up (a single long melisma) may still reach the custos, which then
                 // stands clear of it as far as the staff allows.
                 val custosWidth = GregorianGlyphCatalog.definition(GregorianGlyphName.CustosShort).bounds.width * glyphScale
@@ -539,8 +536,21 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         )
     }
 
+    /**
+     * The pitch of the custos that ends a staff: the next staff's first note. The last staff has none, and a custos
+     * written in the score (`f+`, as before a change of clef) already guides the eye to what follows, so the staff
+     * that ends with one is not given another.
+     */
+    private fun custosPitch(lineIndex: Int, lines: List<List<LayoutUnit>>): Int? {
+        if (lineIndex + 1 >= lines.size) return null
+        if (lines[lineIndex].mapNotNull { it.neume }.lastOrNull()?.notes?.lastOrNull()?.isCustos == true) return null
+        return lines[lineIndex + 1].firstNotNullOfOrNull { it.neume }?.notes?.firstOrNull()?.pitch
+    }
+
     private fun verticalMetrics(
         units: List<LayoutUnit>,
+        custosPitch: Int?,
+        glyphScale: Float,
         staffStep: Float,
         staffGap: Float,
         notationScale: Float,
@@ -549,10 +559,16 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
     ): LineVerticalMetrics {
         val notes = units.mapNotNull { it.neume }.flatMap { it.notes }
         val accidentalPitches = units.mapNotNull { (it.element as? GregorianNotationElement.Accidental)?.mark?.pitch }
-        val pitches = notes.map { it.pitch } + accidentalPitches
+        val pitches = notes.map { it.pitch } + accidentalPitches + listOfNotNull(custosPitch)
         val highestPitch = pitches.maxOrNull() ?: 9
         val lowestPitch = pitches.minOrNull() ?: 3
-        val topInset = max(11 * notationScale, max(0, highestPitch - 9) * staffStep + 10 * notationScale)
+        var topInset = max(11 * notationScale, max(0, highestPitch - 9) * staffStep + 10 * notationScale)
+        // A custos's stem rises farther above its pitch than a note's head: the staff is set low enough to hold it.
+        val highestCustos = (notes.filter { it.isCustos }.map { it.pitch } + listOfNotNull(custosPitch)).maxOrNull()
+        if (highestCustos != null) {
+            val stem = GregorianGlyphCatalog.definition(GregorianGlyphName.CustosShort).origin.y * glyphScale
+            topInset = max(topInset, (highestCustos - 9) * staffStep + stem + 2 * notationScale)
+        }
         val belowStaff = if (lowestPitch < 3) (3 - lowestPitch) * staffStep + 10 * notationScale else 0f
         val lyricOffset = if (belowStaff > 0) belowStaff + 6 * notationScale else 2 * notationScale
         val systemGap = 4 * notationScale
@@ -861,6 +877,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         for ((index, note) in notes.withIndex()) {
             val y = staffCenter - (note.pitch - 6) * staffStep
             val noteOriginX = noteOrigins[index]
+            // Where the note's head is, whatever glyph engraves it.
+            val headFrame = GregorianRect.of(noteOriginX, y - punctumWidth / 2, punctumWidth, punctumWidth)
             if (note.isCustos) {
                 // Drawn as the custos that ends a staff is drawn: without signs, and not as a note that the cantor
                 // guide may light.
@@ -896,8 +914,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                 glyphName = porrectusSwash(neume)
             } else if (isPorrectus && index == 1) {
                 // The porrectus swash already engraves the first two notes.
-                val frame = GregorianRect.of(noteOriginX, y - punctumWidth / 2, punctumWidth, punctumWidth)
-                appendEvent(note, neume, frame, lineIndex, result)
+                appendLedgerLines(headFrame, y, staffTop, staffBottom, staffStep * 2, notationScale, note.id, result.strokes)
+                appendEvent(note, neume, headFrame, lineIndex, result)
                 continue
             }
 
@@ -983,7 +1001,9 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                 result.ink(ictus.frame)
             }
 
-            appendLedgerLines(noteFrame, staffTop, staffBottom, staffStep * 2, notationScale, note.id, result.strokes)
+            // The swash's first head; any other glyph's whole frame.
+            val ledgerFrame = if (isPorrectus && index == 0) headFrame else noteFrame
+            appendLedgerLines(ledgerFrame, y, staffTop, staffBottom, staffStep * 2, notationScale, note.id, result.strokes)
             appendEvent(note, neume, noteFrame, lineIndex, result)
         }
         return result
@@ -1026,15 +1046,22 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         staffTop: Float,
         staffGap: Float,
         glyphScale: Float,
+        notationScale: Float,
         glyphs: MutableList<GregorianPlacedGlyph>,
     ) {
         val lineY = staffTop + (4 - clef.line) * staffGap
         val kind = if (clef.kind == GregorianClefKind.C) GregorianGlyphKind.CClef else GregorianGlyphKind.FClef
-        glyphs += placedGlyph(kind, GregorianPoint(x, lineY), glyphScale)
+        val clefGlyph = placedGlyph(kind, GregorianPoint(x, lineY), glyphScale)
+        glyphs += clefGlyph
         if (clef.flattensB) {
-            val staffCenter = staffTop + staffGap * 1.5f
-            val bPitchY = staffCenter - (1 - 6) * (staffGap / 2)
-            glyphs += placedGlyph(GregorianGlyphKind.Flat, GregorianPoint(x + 11 * glyphScale, bPitchY), glyphScale * 0.9f)
+            // The flat stands on the B the clef flattens, a step below the clef's line, just after the clef.
+            val flatScale = glyphScale * 0.9f
+            val flat = GregorianGlyphCatalog.definition(GregorianGlyphName.Flat)
+            glyphs += placedGlyph(
+                GregorianGlyphKind.Flat,
+                GregorianPoint(clefGlyph.frame.right + notationScale + flat.origin.x * flatScale, lineY + staffGap / 2),
+                flatScale,
+            )
         }
     }
 
@@ -1102,8 +1129,13 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         fontName: String,
     ): Float = if (lyric.isEmpty()) 0f else ceil(measurer.width(lyric, style, fontSize, fontName))
 
+    /**
+     * The ledger lines a note at [noteY] needs, as wide as its head at [frame]. They follow the note's pitch, not its
+     * glyph, whose stem or swash may reach far from the head.
+     */
     private fun appendLedgerLines(
         frame: GregorianRect,
+        noteY: Float,
         staffTop: Float,
         staffBottom: Float,
         staffGap: Float,
@@ -1111,18 +1143,17 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         eventId: String,
         strokes: MutableList<GregorianPlacedStroke>,
     ) {
-        val midY = frame.center.y
-        if (midY <= staffTop - staffGap / 2) {
+        if (noteY <= staffTop - staffGap / 2) {
             var y = staffTop - staffGap
-            while (y >= midY - 1) {
+            while (y >= noteY - 1) {
                 strokes += GregorianPlacedStroke(
                     GregorianStrokeKind.Ledger, GregorianPoint(frame.left - 3 * scale, y), GregorianPoint(frame.right + 3 * scale, y), scale, eventId,
                 )
                 y -= staffGap
             }
-        } else if (midY >= staffBottom + staffGap / 2) {
+        } else if (noteY >= staffBottom + staffGap / 2) {
             var y = staffBottom + staffGap
-            while (y <= midY + 1) {
+            while (y <= noteY + 1) {
                 strokes += GregorianPlacedStroke(
                     GregorianStrokeKind.Ledger, GregorianPoint(frame.left - 3 * scale, y), GregorianPoint(frame.right + 3 * scale, y), scale, eventId,
                 )

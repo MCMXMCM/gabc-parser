@@ -27,6 +27,22 @@ final class NumberedEventTests: XCTestCase {
         XCTAssertEqual(score.neumes.map(\.syllableID), ["syllable-0", "syllable-1"])
     }
 
+    func testLyricMarksAreNamedAfterTheirScore() throws {
+        // Two scores of one document keep the names of their marks apart, as
+        // they keep the names of their notes.
+        let gabc = "%% (c4) *() a(g) (::)"
+        let marks = { (score: GregorianScore) in
+            score.elements.compactMap { element -> String? in
+                guard case let .lyricMark(mark) = element else { return nil }
+                return mark.id
+            }
+        }
+
+        XCTAssertEqual(marks(try GregorianScoreParser.parse(gabc: gabc, scoreID: "one")), ["one-lyric-mark-5-7"])
+        XCTAssertEqual(marks(try GregorianScoreParser.parse(gabc: gabc, scoreID: "two")), ["two-lyric-mark-5-7"])
+        XCTAssertEqual(marks(try GregorianScoreParser.parse(gabc: gabc)), ["lyric-mark-5-7"])
+    }
+
     func testRelativePitchCountsStaffStepsFromH() throws {
         let score = try GregorianScoreParser.parse(gabc: "%% (c4) a(h) b(a) c(m) d(G) (::)")
 

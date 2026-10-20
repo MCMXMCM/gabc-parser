@@ -396,6 +396,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let lineVerticalMetrics = lines.enumerated().map { lineIndex, units in
             verticalMetrics(
                 for: units,
+                custosPitch: Self.custosPitch(endingLine: lineIndex, of: lines),
+                glyphScale: glyphScale,
                 staffStep: staffStep,
                 staffGap: staffGap,
                 notationScale: notationScale,
@@ -473,6 +475,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 staffTop: staffTop,
                 staffGap: staffGap,
                 glyphScale: glyphScale,
+                notationScale: notationScale,
                 glyphs: &glyphs
             )
 
@@ -532,6 +535,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                         staffTop: staffTop,
                         staffGap: staffGap,
                         glyphScale: glyphScale,
+                        notationScale: notationScale,
                         glyphs: &glyphs
                     )
 
@@ -628,15 +632,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 }
             }
 
-            // A custos written in the score (`f+`, as before a change of
-            // clef) already guides the eye to what follows; the staff that
-            // ends with one is not given another.
-            let endsWithWrittenCustos = lineUnits.compactMap(\.neume).last?
-                .notes.last?.isCustos ?? false
-            if lineIndex + 1 < lines.count,
-               !endsWithWrittenCustos,
-               let nextNote = lines[lineIndex + 1].compactMap(\.neume).first?.notes.first {
-                let nextY = staffCenter - CGFloat(nextNote.pitch - 6) * staffStep
+            if let custosPitch = Self.custosPitch(endingLine: lineIndex, of: lines) {
+                let nextY = staffCenter - CGFloat(custosPitch - 6) * staffStep
                 // A staff too short to be closed up (a single long melisma)
                 // may still reach the custos, which then stands clear of it
                 // as far as the staff allows.
@@ -898,6 +895,18 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let neumeID: String
     }
 
+    /// The pitch of the custos that ends a staff: the next staff's first
+    /// note. The last staff has none, and a custos written in the score
+    /// (`f+`, as before a change of clef) already guides the eye to what
+    /// follows, so the staff that ends with one is not given another.
+    private static func custosPitch(endingLine lineIndex: Int, of lines: [[LayoutUnit]]) -> Int? {
+        guard lineIndex + 1 < lines.count,
+              lines[lineIndex].compactMap(\.neume).last?.notes.last?.isCustos != true else {
+            return nil
+        }
+        return lines[lineIndex + 1].compactMap(\.neume).first?.notes.first?.pitch
+    }
+
     private func openingInitial(
         in score: GregorianScore,
         annotation: String?
@@ -923,6 +932,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
 
     private func verticalMetrics(
         for units: [LayoutUnit],
+        custosPitch: Int?,
+        glyphScale: CGFloat,
         staffStep: CGFloat,
         staffGap: CGFloat,
         notationScale: CGFloat,
@@ -934,13 +945,23 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             guard case let .accidental(accidental) = unit.element else { return nil }
             return accidental.pitch
         }
-        let pitches = notes.map(\.pitch) + accidentalPitches
+        let pitches = notes.map(\.pitch) + accidentalPitches + (custosPitch.map { [$0] } ?? [])
         let highestPitch = pitches.max() ?? 9
         let lowestPitch = pitches.min() ?? 3
-        let topInset = max(
+        var topInset = max(
             11 * notationScale,
             CGFloat(max(0, highestPitch - 9)) * staffStep + 10 * notationScale
         )
+        // A custos's stem rises farther above its pitch than a note's head:
+        // the staff is set low enough to hold it.
+        let custosPitches = notes.filter(\.isCustos).map(\.pitch) + (custosPitch.map { [$0] } ?? [])
+        if let highestCustos = custosPitches.max() {
+            let stem = GregorianGlyphCatalog.definition(for: .custosShort).origin.y * glyphScale
+            topInset = max(
+                topInset,
+                CGFloat(highestCustos - 9) * staffStep + stem + 2 * notationScale
+            )
+        }
         let belowStaff = lowestPitch < 3
             ? CGFloat(3 - lowestPitch) * staffStep + 10 * notationScale
             : 0
@@ -1434,6 +1455,13 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         for (index, note) in neume.notes.enumerated() {
             let y = staffCenter - CGFloat(note.pitch - 6) * staffStep
             let noteOriginX = noteOrigins[index]
+            // Where the note's head is, whatever glyph engraves it.
+            let headFrame = CGRect(
+                x: noteOriginX,
+                y: y - punctumWidth / 2,
+                width: punctumWidth,
+                height: punctumWidth
+            )
             if note.isCustos {
                 // Drawn as the custos that ends a staff is drawn: without
                 // signs, and not as a note that the cantor guide may light.
@@ -1466,13 +1494,17 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 glyphName = Self.porrectusSwash(neume)
             } else if isPorrectus, index == 1 {
                 // The porrectus swash already engraves the first two notes.
-                let frame = CGRect(
-                    x: noteOriginX,
-                    y: y - punctumWidth / 2,
-                    width: punctumWidth,
-                    height: punctumWidth
+                appendLedgerLines(
+                    for: headFrame,
+                    noteY: y,
+                    staffTop: staffTop,
+                    staffBottom: staffBottom,
+                    staffGap: staffStep * 2,
+                    scale: notationScale,
+                    eventID: note.id,
+                    strokes: &result.strokes
                 )
-                appendEvent(note, neume: neume, frame: frame, lineIndex: lineIndex, to: &result)
+                appendEvent(note, neume: neume, frame: headFrame, lineIndex: lineIndex, to: &result)
                 continue
             }
 
@@ -1585,7 +1617,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             }
 
             appendLedgerLines(
-                for: noteFrame,
+                // The swash's first head; any other glyph's whole frame.
+                for: isPorrectus && index == 0 ? headFrame : noteFrame,
+                noteY: y,
                 staffTop: staffTop,
                 staffBottom: staffBottom,
                 staffGap: staffStep * 2,
@@ -1680,25 +1714,30 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         staffTop: CGFloat,
         staffGap: CGFloat,
         glyphScale: CGFloat,
+        notationScale: CGFloat,
         glyphs: inout [GregorianPlacedGlyph]
     ) {
         let lineY = staffTop + CGFloat(4 - clef.line) * staffGap
         let kind: GregorianGlyphKind = clef.kind == .c ? .cClef : .fClef
-        glyphs.append(
-            placedGlyph(
-                kind: kind,
-                anchor: CGPoint(x: x, y: lineY),
-                scale: glyphScale
-            )
+        let clefGlyph = placedGlyph(
+            kind: kind,
+            anchor: CGPoint(x: x, y: lineY),
+            scale: glyphScale
         )
+        glyphs.append(clefGlyph)
         if clef.flattensB {
-            let staffCenter = staffTop + staffGap * 1.5
-            let bPitchY = staffCenter - CGFloat(1 - 6) * (staffGap / 2)
+            // The flat stands on the B the clef flattens, a step below the
+            // clef's line, just after the clef.
+            let flatScale = glyphScale * 0.9
+            let flat = GregorianGlyphCatalog.definition(for: .flat)
             glyphs.append(
                 placedGlyph(
                     kind: .flat,
-                    anchor: CGPoint(x: x + 11 * glyphScale, y: bPitchY),
-                    scale: glyphScale * 0.9
+                    anchor: CGPoint(
+                        x: clefGlyph.frame.maxX + notationScale + flat.origin.x * flatScale,
+                        y: lineY + staffGap / 2
+                    ),
+                    scale: flatScale
                 )
             )
         }
@@ -1813,8 +1852,12 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         return ceil(CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
     }
 
+    /// The ledger lines a note at `noteY` needs, as wide as its head at
+    /// `frame`. They follow the note's pitch, not its glyph, whose stem or
+    /// swash may reach far from the head.
     private func appendLedgerLines(
         for frame: CGRect,
+        noteY: CGFloat,
         staffTop: CGFloat,
         staffBottom: CGFloat,
         staffGap: CGFloat,
@@ -1822,9 +1865,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         eventID: String,
         strokes: inout [GregorianPlacedStroke]
     ) {
-        if frame.midY <= staffTop - staffGap / 2 {
+        if noteY <= staffTop - staffGap / 2 {
             var y = staffTop - staffGap
-            while y >= frame.midY - 1 {
+            while y >= noteY - 1 {
                 strokes.append(
                     GregorianPlacedStroke(
                         kind: .ledger,
@@ -1836,9 +1879,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 )
                 y -= staffGap
             }
-        } else if frame.midY >= staffBottom + staffGap / 2 {
+        } else if noteY >= staffBottom + staffGap / 2 {
             var y = staffBottom + staffGap
-            while y <= frame.midY + 1 {
+            while y <= noteY + 1 {
                 strokes.append(
                     GregorianPlacedStroke(
                         kind: .ledger,

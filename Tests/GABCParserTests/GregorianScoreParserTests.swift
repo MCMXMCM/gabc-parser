@@ -145,6 +145,24 @@ final class GregorianScoreParserTests: XCTestCase {
         XCTAssertTrue(layout.glyphs.contains { $0.kind == .flat })
     }
 
+    func testLiquescentInclinatumEndsAnAncus() throws {
+        // `F~` is a diminished inclinatum, not a note of its own: `hGF~` is
+        // the ancus, a climacus whose last inclinatum is liquescent.
+        let score = try GregorianScoreParser.parse(gabc: "%% (c4) a(hGF~) b(hGF) (::)")
+
+        XCTAssertEqual(score.neumes.map(\.form), [.ancus, .climacus])
+        let ancus = try XCTUnwrap(score.neumes.first)
+        XCTAssertEqual(ancus.notes.map(\.shape), [.punctum, .inclinatum, .inclinatum])
+        XCTAssertEqual(ancus.notes.last?.liquescence, .small)
+
+        let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390)
+        XCTAssertTrue(
+            layout.glyphs.contains {
+                $0.eventID == ancus.notes.last?.id && $0.kind == .catalog(.punctumInclinatumLiquescent)
+            }
+        )
+    }
+
     func testClassifiesNamedNeumeFormsFromPitchContours() throws {
         let timeline = makeTimeline(
             pitches: Array(0..<10),

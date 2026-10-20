@@ -36,6 +36,17 @@ class NumberedEventTest {
     }
 
     @Test
+    fun lyricMarksAreNamedAfterTheirScore() {
+        // Two scores of one document keep the names of their marks apart, as they keep the names of their notes.
+        val gabc = "%% (c4) *() a(g) (::)"
+        fun marks(score: GregorianScore) = score.elements.mapNotNull { (it as? GregorianNotationElement.LyricMark)?.mark?.id }
+
+        assertEquals(listOf("one-lyric-mark-5-7"), marks(GregorianScoreParser.parse(gabc, "one")))
+        assertEquals(listOf("two-lyric-mark-5-7"), marks(GregorianScoreParser.parse(gabc, "two")))
+        assertEquals(listOf("lyric-mark-5-7"), marks(GregorianScoreParser.parse(gabc)))
+    }
+
+    @Test
     fun relativePitchCountsStaffStepsFromH() {
         val score = GregorianScoreParser.parse("%% (c4) a(h) b(a) c(m) d(G) (::)")
 

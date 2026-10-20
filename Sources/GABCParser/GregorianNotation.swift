@@ -225,25 +225,31 @@ public struct GregorianNeume: Codable, Hashable, Sendable, Identifiable {
 }
 
 public struct GregorianLyricMark: Codable, Hashable, Sendable, Identifiable {
+    /// Named by where it is written, after its score, as the score's notes
+    /// are: `lyric-mark-5-7`, or `kyrie-lyric-mark-5-7`.
     public var id: String {
-        "lyric-mark-\(sourceRange.lowerBound)-\(sourceRange.upperBound)"
+        "\(scoreID.map { "\($0)-" } ?? "")lyric-mark-\(sourceRange.lowerBound)-\(sourceRange.upperBound)"
     }
 
     public let text: String
     public let style: GregorianLyricStyle
     public let startsWord: Bool
     public let sourceRange: GregorianSourceRange
+    /// The identifier of the score the mark was parsed in, if one was given.
+    public let scoreID: String?
 
     public init(
         text: String,
         style: GregorianLyricStyle,
         startsWord: Bool,
-        sourceRange: GregorianSourceRange
+        sourceRange: GregorianSourceRange,
+        scoreID: String? = nil
     ) {
         self.text = text
         self.style = style
         self.startsWord = startsWord
         self.sourceRange = sourceRange
+        self.scoreID = scoreID
     }
 }
 
@@ -356,7 +362,7 @@ public enum GregorianScoreParser {
     /// The notation follows the `%%` that ends a GABC file's header; text
     /// without one is read as notation alone.
     public static func parse(gabc: String, scoreID: String? = nil) throws -> GregorianScore {
-        try parse(gabc: gabc, events: .numbered(prefix: scoreID.map { "\($0)-" } ?? ""))
+        try parse(gabc: gabc, events: .numbered(scoreID: scoreID))
     }
 
     /// Parses a GABC score whose notes a compiled timeline names, one event
@@ -392,7 +398,7 @@ public enum GregorianScoreParser {
 
     private enum EventSource {
         case compiled([ResolvedEvent])
-        case numbered(prefix: String)
+        case numbered(scoreID: String?)
     }
 
     private static func parse(gabc: String, events source: EventSource) throws -> GregorianScore {
@@ -407,15 +413,16 @@ public enum GregorianScoreParser {
                 options: .regularExpression
             )
         let compiledEvents: [ResolvedEvent]?
-        let eventPrefix: String
+        let scoreID: String?
         switch source {
         case let .compiled(events):
             compiledEvents = events
-            eventPrefix = ""
-        case let .numbered(prefix):
+            scoreID = nil
+        case let .numbered(numberedScoreID):
             compiledEvents = nil
-            eventPrefix = prefix
+            scoreID = numberedScoreID
         }
+        let eventPrefix = scoreID.map { "\($0)-" } ?? ""
         // Each timeline event's syllable, to check a lyric's notes against.
         let syllableIDs = compiledEvents.map { events in
             Dictionary(events.map { ($0.id, $0.syllableID) }, uniquingKeysWith: { first, _ in first })
@@ -473,7 +480,8 @@ public enum GregorianScoreParser {
                             sourceRange: GregorianSourceRange(
                                 lowerBound: cursorOffset,
                                 upperBound: openOffset
-                            )
+                            ),
+                            scoreID: scoreID
                         )
                     )
                 )
@@ -778,12 +786,14 @@ public enum GregorianScoreParser {
                 shape = .custos
             } else if suffix.contains("w") || suffix.contains("W") {
                 shape = .quilisma
+            } else if character.isUppercase {
+                // A capital is an inclinatum, liquescent or not: `F~` is the
+                // diminished inclinatum that ends an ancus.
+                shape = .inclinatum
             } else if suffix.contains("<") || suffix.contains(">") || suffix.contains("~") {
                 shape = .liquescent
             } else if suffix.contains("v") || suffix.contains("V") {
                 shape = .virga
-            } else if character.isUppercase {
-                shape = .inclinatum
             } else if suffix.contains("o") || suffix.contains("O") {
                 shape = .oriscus
             } else if suffix.contains("s") || suffix.contains("S") {

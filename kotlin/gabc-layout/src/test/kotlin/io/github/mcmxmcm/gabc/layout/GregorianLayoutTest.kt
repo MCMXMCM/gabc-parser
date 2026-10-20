@@ -726,6 +726,72 @@ class GregorianLayoutTest {
     }
 
     @Test
+    fun testLedgerLinesFollowEachNotesPitch() {
+        val engine = GregorianEngravingLayoutEngine()
+        fun layout(gabc: String) = engine.layout(GregorianScoreParser.parse(gabc), width = 390f)
+        fun ledgers(layout: GregorianLayout) = layout.strokes.filter { it.kind == GregorianStrokeKind.Ledger }
+        val staffGap = 200f / 16
+
+        // A virga on the first ledger line above has its line, as a punctum there does, though its stem reaches
+        // down into the staff.
+        for (gabc in listOf("%% (c4) a(l) (::)", "%% (c4) a(lv) (::)")) {
+            val placed = layout(gabc)
+            val lines = ledgers(placed)
+            assertEquals(gabc, 1, lines.size)
+            assertEquals(gabc, placed.staffs[0].frame.top - staffGap, lines.first().start.y, 0.001f)
+        }
+
+        // The low note of a porrectus, which its swash engraves, has its line below the staff, under that
+        // note's head.
+        val placed = layout("%% (c4) a(gbg) (::)")
+        val lines = ledgers(placed)
+        assertEquals(1, lines.size)
+        val line = lines.first()
+        assertEquals(placed.staffs[0].frame.bottom + staffGap, line.start.y, 0.001f)
+        val low = placed.events.first { it.eventId == "note-1" }
+        assertTrue(line.start.x < low.frame.center.x)
+        assertTrue(line.end.x > low.frame.center.x)
+    }
+
+    @Test
+    fun testFlatCClefSetsItsFlatOnTheBItFlattens() {
+        val engine = GregorianEngravingLayoutEngine()
+        val staffGap = 200f / 16
+        val flatDefinition = GregorianGlyphCatalog.definition(GregorianGlyphName.Flat)
+        for (line in 1..4) {
+            val layout = engine.layout(GregorianScoreParser.parse("%% (cb$line) a(g) (::)"), width = 390f)
+            val staff = layout.staffs[0].frame
+            val clef = layout.glyphs.first { it.kind == GregorianGlyphKind.CClef }
+            val flat = layout.glyphs.first { it.kind == GregorianGlyphKind.Flat }
+            val note = layout.glyphs.first { it.eventId == "note-0" }
+
+            // On B, a step below the clef's line,
+            val flatScale = flat.frame.height / flatDefinition.bounds.height
+            val clefLineY = staff.top + (4 - line) * staffGap
+            assertEquals("cb$line", clefLineY + staffGap / 2, flat.frame.top + flatDefinition.origin.y * flatScale, 0.001f)
+            // after the clef and before the first note.
+            assertTrue("cb$line", flat.frame.left > clef.frame.right)
+            assertTrue("cb$line", flat.frame.right < note.frame.left)
+        }
+    }
+
+    @Test
+    fun testCustosThatEndsAStaffStaysWithinItsSystem() {
+        // Each staff's custos shows the next staff's first note, here high above the staff, and its stem rises
+        // higher still.
+        val score = GregorianScoreParser.parse("%% (c4) A(g) (z) B(m) (z) C(g) (z) D(l) (::)")
+        val layout = GregorianEngravingLayoutEngine().layout(score, width = 390f)
+        val custodes = custosGlyphs(layout)
+        assertEquals(3, custodes.size)
+        for (custos in custodes) {
+            assertTrue(
+                "${custos.frame} outside ${layout.staffs.map { it.systemFrame }}",
+                layout.staffs.any { custos.frame in it.systemFrame },
+            )
+        }
+    }
+
+    @Test
     fun testWrittenCustosIsDrawnAsACustosAndOffersNoPlaceToBeginSinging() {
         val score = parsedCustosFixture(
             "tó(h)ris.(f.) (f+::) (c4) O(h)rémus.(h.) (::)",
