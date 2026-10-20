@@ -416,12 +416,17 @@ public enum GregorianScoreParser {
             compiledEvents = nil
             eventPrefix = prefix
         }
+        // Each timeline event's syllable, to check a lyric's notes against.
+        let syllableIDs = compiledEvents.map { events in
+            Dictionary(events.map { ($0.id, $0.syllableID) }, uniquingKeysWith: { first, _ in first })
+        }
         var elements: [GregorianNotationElement] = []
         var cursor = body.startIndex
+        // The cursor's offset in characters, kept as it advances.
+        var cursorOffset = 0
         var eventIndex = 0
         // Numbered events give each group that writes a note a syllable.
         var syllableIndex = 0
-        var sourceOffset = 0
         // A word begins where a space stands before a group, and a clef or a
         // bar that stands there alone does not use the beginning up: in
         // "mus.(h.) (:)De(g)us" the bar ends one word and "De" begins the
@@ -430,16 +435,15 @@ public enum GregorianScoreParser {
         var wordStartIsPending = false
 
         while let open = body[cursor...].firstIndex(of: "(") {
-            let lyricSource = String(body[cursor..<open])
+            let lyricSource = withoutTags(String(body[cursor..<open]))
+            let openOffset = cursorOffset + body.distance(from: cursor, to: open)
             guard let close = body[open...].firstIndex(of: ")") else {
-                throw GregorianScoreParserError.unterminatedNotation(
-                    offset: body.distance(from: body.startIndex, to: open)
-                )
+                throw GregorianScoreParserError.unterminatedNotation(offset: openOffset)
             }
 
             let notationStart = body.index(after: open)
             let notation = String(body[notationStart..<close])
-            let groupOffset = body.distance(from: body.startIndex, to: notationStart)
+            let groupOffset = openOffset + 1
             let lyric = cleanLyric(lyricSource)
             let parsedLyricStyle = lyricStyle(lyricSource)
             let sourceStartsWord = lyricStartsWord(lyricSource, isFirst: elements.isEmpty)
@@ -457,8 +461,6 @@ public enum GregorianScoreParser {
             }
             if !lyric.isEmpty, !hasNotes {
                 let displayLyric = standaloneLyricText(lyric)
-                let lyricStart = body.distance(from: body.startIndex, to: cursor)
-                let lyricEnd = body.distance(from: body.startIndex, to: open)
                 elements.append(
                     .lyricMark(
                         GregorianLyricMark(
@@ -469,8 +471,8 @@ public enum GregorianScoreParser {
                             ),
                             startsWord: startsWord,
                             sourceRange: GregorianSourceRange(
-                                lowerBound: lyricStart,
-                                upperBound: lyricEnd
+                                lowerBound: cursorOffset,
+                                upperBound: openOffset
                             )
                         )
                     )
@@ -533,10 +535,8 @@ public enum GregorianScoreParser {
                     guard let first = mappedNotes.first, let event = mappedEvents.first else { continue }
                     let neumeLyric = appliedLyric ? "" : lyric
                     if !neumeLyric.isEmpty,
-                       let compiledEvents,
-                       mappedNotes.contains(where: { mapped in
-                           compiledEvents.first(where: { $0.id == mapped.id })?.syllableID != event.syllableID
-                       }) {
+                       let syllableIDs,
+                       mappedNotes.contains(where: { syllableIDs[$0.id] != event.syllableID }) {
                         throw GregorianScoreParserError.eventSyllableMismatch(eventID: first.id)
                     }
                     let segments = GregorianNeumeSegmenter.segment(mappedNotes)
@@ -569,19 +569,14 @@ public enum GregorianScoreParser {
             }
 
             cursor = body.index(after: close)
-            sourceOffset = body.distance(from: body.startIndex, to: cursor)
+            cursorOffset = groupOffset + body.distance(from: notationStart, to: close) + 1
         }
 
-        if let compiledEvents {
-            guard eventIndex == compiledEvents.count else {
-                throw GregorianScoreParserError.timelineMismatch(
-                    expected: compiledEvents.count,
-                    parsed: eventIndex
-                )
-            }
-            guard !elements.isEmpty || compiledEvents.isEmpty else {
-                throw GregorianScoreParserError.unsupportedToken("empty score", offset: sourceOffset)
-            }
+        if let compiledEvents, eventIndex != compiledEvents.count {
+            throw GregorianScoreParserError.timelineMismatch(
+                expected: compiledEvents.count,
+                parsed: eventIndex
+            )
         }
         return GregorianScore(elements: elements)
     }
@@ -625,40 +620,44 @@ public enum GregorianScoreParser {
             }
         }
 
+        // A `[…]` annotation is skipped whole, to its closing bracket or the
+        // end of the group.
+        func indexAfterBracket(at index: Int) -> Int {
+            characters[(index + 1)...].firstIndex(of: "]").map { $0 + 1 } ?? characters.count
+        }
+
+        func isFlatCClef(at index: Int) -> Bool {
+            characters[index] == "c"
+                && index + 2 < characters.count
+                && characters[index + 1] == "b"
+                && characters[index + 2].isNumber
+        }
+
+        func isClef(at index: Int) -> Bool {
+            (characters[index] == "c" || characters[index] == "f")
+                && index + 1 < characters.count
+                && (characters[index + 1].isNumber || isFlatCClef(at: index))
+        }
+
         while index < characters.count {
             let character = characters[index]
 
             if character == "[" {
                 flushNotes()
-                if let close = characters[(index + 1)...].firstIndex(of: "]") {
-                    index = close + 1
-                } else {
-                    index = characters.count
-                }
+                index = indexAfterBracket(at: index)
                 continue
             }
 
-            if character.isWhitespace || character == "/" {
+            if character.isWhitespace || character == "/" || character == "!" {
                 flushNotes()
                 index += 1
                 continue
             }
 
-            if character == "!" {
+            if isClef(at: index) {
+                let flattensB = isFlatCClef(at: index)
                 flushNotes()
-                index += 1
-                continue
-            }
-
-            let isFlatCClef = character == "c"
-                && index + 2 < characters.count
-                && characters[index + 1] == "b"
-                && characters[index + 2].isNumber
-            if (character == "c" || character == "f"),
-               index + 1 < characters.count,
-               characters[index + 1].isNumber || isFlatCClef {
-                flushNotes()
-                let lineIndex = index + (isFlatCClef ? 2 : 1)
+                let lineIndex = index + (flattensB ? 2 : 1)
                 let token = String(characters[index...lineIndex])
                 guard let line = Int(String(characters[lineIndex])), (1...4).contains(line) else {
                     throw GregorianScoreParserError.invalidClef(
@@ -671,7 +670,7 @@ public enum GregorianScoreParser {
                         GregorianClef(
                             kind: character == "c" ? .c : .f,
                             line: line,
-                            flattensB: isFlatCClef
+                            flattensB: flattensB
                         )
                     )
                 )
@@ -746,27 +745,13 @@ public enum GregorianScoreParser {
             while index < characters.count {
                 let next = characters[index]
                 if next == "[" {
-                    if let close = characters[(index + 1)...].firstIndex(of: "]") {
-                        index = close + 1
-                    } else {
-                        index = characters.count
-                    }
+                    index = indexAfterBracket(at: index)
                     continue
                 }
                 if next.isWhitespace || next == "/" || next == ":" || next == ";" || next == ","
                     || next == "`" || next == "z" || next == "Z"
                     || pitchValue(next) != nil
-                    || ((next == "c" || next == "f")
-                        && index + 1 < characters.count
-                        && (
-                            characters[index + 1].isNumber
-                            || (
-                                next == "c"
-                                && index + 2 < characters.count
-                                && characters[index + 1] == "b"
-                                && characters[index + 2].isNumber
-                            )
-                        )) {
+                    || isClef(at: index) {
                     break
                 }
                 suffix.append(next)
@@ -884,18 +869,11 @@ public enum GregorianScoreParser {
     }
 
     private static func pitchValue(_ character: Character) -> Int? {
-        guard character.unicodeScalars.count == 1 else {
+        let scalars = String(character).lowercased().unicodeScalars
+        guard scalars.count == 1, let scalar = scalars.first, ("a"..."m").contains(scalar) else {
             return nil
         }
-        let normalized = String(character).lowercased()
-        guard let normalizedScalar = normalized.unicodeScalars.first,
-              normalized.unicodeScalars.count == 1 else {
-            return nil
-        }
-        let lower = Character("a").unicodeScalars.first!.value
-        let upper = Character("m").unicodeScalars.first!.value
-        guard normalizedScalar.value >= lower, normalizedScalar.value <= upper else { return nil }
-        return Int(normalizedScalar.value - lower)
+        return Int(scalar.value - ("a" as Unicode.Scalar).value)
     }
 
     private static func isSupportedSuffix(_ character: Character) -> Bool {
@@ -909,9 +887,19 @@ public enum GregorianScoreParser {
             || ["'", "!", "@", "]", "-", "+", "_", "*", "†", "(", "."].contains(character)
     }
 
+    // Lyric markup: tags, and the psalm-tone pointing of preparatory and
+    // accented syllables.
+    private static let tagPattern = #"<[^>]+>"#
+    private static let preparatoryPattern = #"_([^_]+)_"#
+    private static let accentedPattern = #"\*([^*]+)\*"#
+
+    private static func withoutTags(_ source: String) -> String {
+        source.replacingOccurrences(of: tagPattern, with: "", options: .regularExpression)
+    }
+
+    /// A group's lyric as sung, from its source without tags.
     private static func cleanLyric(_ source: String) -> String {
         source
-            .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: "{", with: "")
             .replacingOccurrences(of: "}", with: "")
             // Psalm-tone sources use paired underscores for preparatory
@@ -919,32 +907,20 @@ public enum GregorianScoreParser {
             // delimiters describe pointing/style and are not lyric text.
             // The paired patterns intentionally leave a standalone
             // liturgical asterisk unchanged.
-            .replacingOccurrences(
-                of: #"_([^_]+)_"#,
-                with: "$1",
-                options: .regularExpression
-            )
-            .replacingOccurrences(
-                of: #"\*([^*]+)\*"#,
-                with: "$1",
-                options: .regularExpression
-            )
+            .replacingOccurrences(of: preparatoryPattern, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: accentedPattern, with: "$1", options: .regularExpression)
             .replacingOccurrences(of: "\n", with: " ")
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// A group's lyric style, from its source without tags.
     private static func lyricStyle(_ source: String) -> GregorianLyricStyle {
-        let withoutTags = source.replacingOccurrences(
-            of: #"<[^>]+>"#,
-            with: "",
-            options: .regularExpression
-        )
-        if withoutTags.range(of: #"\*[^*]+\*"#, options: .regularExpression) != nil {
+        if source.range(of: accentedPattern, options: .regularExpression) != nil {
             return .accented
         }
-        if withoutTags.range(of: #"_([^_]+)_"#, options: .regularExpression) != nil {
+        if source.range(of: preparatoryPattern, options: .regularExpression) != nil {
             return .preparatory
         }
         return .regular
@@ -972,14 +948,9 @@ public enum GregorianScoreParser {
         return rubricMarks.contains(lyric) ? .rubric : .regular
     }
 
+    /// Whether a group's lyric, from its source without tags, begins a word.
     private static func lyricStartsWord(_ source: String, isFirst: Bool) -> Bool {
-        guard !isFirst else { return true }
-        let withoutTags = source.replacingOccurrences(
-            of: #"<[^>]+>"#,
-            with: "",
-            options: .regularExpression
-        )
-        return withoutTags.first?.isWhitespace == true
+        isFirst || source.first?.isWhitespace == true
     }
 }
 
@@ -987,10 +958,9 @@ public enum GregorianNeumeClassifier {
     public static func classify(_ notes: [GregorianNote]) -> GregorianNeumeForm {
         guard let first = notes.first else { return .punctum }
         let pitches = notes.map(\.pitch)
-        let directions = zip(pitches, pitches.dropFirst()).map { nextDirection(from: $0, to: $1) }
+        let directions = zip(pitches, pitches.dropFirst()).map { direction($0, $1) }
         let allEqual = Set(pitches).count == 1
         let allInclinata = notes.allSatisfy { $0.shape == .inclinatum }
-        let allStropha = notes.allSatisfy { $0.shape == .stropha }
         let allVirga = notes.allSatisfy { $0.shape == .virga }
         // A note written twice or thrice (`hvv`, `hsss`) counts as so many.
         let writtenCount = notes.reduce(0) { $0 + $1.repetitionCount }
@@ -1003,9 +973,6 @@ public enum GregorianNeumeClassifier {
             case .oriscus: .oriscus
             default: .punctum
             }
-        }
-        if allEqual, allStropha {
-            return writtenCount >= 3 ? .tristropha : .distropha
         }
         if allEqual, allVirga {
             return writtenCount >= 3 ? .trivirga : .bivirga
@@ -1043,12 +1010,11 @@ public enum GregorianNeumeClassifier {
         }
         return .punctum
     }
+}
 
-    private static func nextDirection(from: Int, to: Int) -> Int {
-        if to > from { return 1 }
-        if to < from { return -1 }
-        return 0
-    }
+/// Whether a melody rises (1), falls (-1) or holds (0) from one pitch to the next.
+private func direction(_ from: Int, _ to: Int) -> Int {
+    (to - from).signum()
 }
 
 /// Splits a continuous GABC note run into the named forms accepted by the
@@ -1091,23 +1057,11 @@ public enum GregorianNeumeSegmenter {
             let second = notes[index + 1]
             let firstDirection = direction(first.pitch, second.pitch)
 
-            if first.shape == .virga {
+            if first.shape == .virga || first.shape == .stropha {
                 let count = repeatedShapeCount(
                     notes,
                     from: index,
-                    shape: .virga,
-                    pitch: first.pitch,
-                    maximum: 3
-                )
-                result.append(Array(notes[index..<(index + count)]))
-                index += count
-                continue
-            }
-            if first.shape == .stropha {
-                let count = repeatedShapeCount(
-                    notes,
-                    from: index,
-                    shape: .stropha,
+                    shape: first.shape,
                     pitch: first.pitch,
                     maximum: 3
                 )
@@ -1187,12 +1141,6 @@ public enum GregorianNeumeSegmenter {
             index += length
         }
         return result
-    }
-
-    private static func direction(_ from: Int, _ to: Int) -> Int {
-        if to > from { return 1 }
-        if to < from { return -1 }
-        return 0
     }
 
     private static func repeatedShapeCount(

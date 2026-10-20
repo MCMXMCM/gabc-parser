@@ -27,6 +27,14 @@ extension GregorianGlyphDefinition {
     }
 }
 
+extension GregorianGlyphCatalog {
+    /// Each glyph's outline, built from its commands once. Nothing changes a
+    /// path once it is built, so the paths are shared between threads.
+    nonisolated(unsafe) fileprivate static let outlines: [GregorianGlyphName: CGPath] = Dictionary(
+        uniqueKeysWithValues: GregorianGlyphName.allCases.map { ($0, definition(for: $0).path) }
+    )
+}
+
 extension GregorianPlacedGlyph {
     /// The glyph's outline, scaled into its frame, in layout coordinates.
     /// Fill it with the even-odd rule: some glyphs need it.
@@ -52,6 +60,7 @@ extension GregorianPlacedGlyph {
             tx: frame.minX - sourceBounds.minX * scaleX,
             ty: frame.minY - sourceBounds.minY * scaleY
         )
-        return definition.path.copy(using: &transform) ?? CGMutablePath()
+        let outline = GregorianGlyphCatalog.outlines[kind.catalogName] ?? definition.path
+        return outline.copy(using: &transform) ?? CGMutablePath()
     }
 }

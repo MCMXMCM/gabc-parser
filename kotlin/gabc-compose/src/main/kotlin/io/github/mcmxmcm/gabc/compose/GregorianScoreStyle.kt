@@ -42,6 +42,10 @@ public data class GregorianScoreStyle(
 /** The colors scores below are drawn in; null draws them in [GregorianScoreStyle.standard]. */
 public val LocalGregorianScoreStyle: ProvidableCompositionLocal<GregorianScoreStyle?> = staticCompositionLocalOf { null }
 
+/** The colors a score here is drawn in: those [LocalGregorianScoreStyle] gives, or [GregorianScoreStyle.standard]. */
+@Composable
+internal fun currentScoreStyle(): GregorianScoreStyle = LocalGregorianScoreStyle.current ?: GregorianScoreStyle.standard()
+
 /** Sets the colors the scores in [content] are drawn in. */
 @Composable
 public fun GregorianScoreStyleProvider(style: GregorianScoreStyle, content: @Composable () -> Unit) {

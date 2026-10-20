@@ -281,6 +281,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
     /// The advance, in punctum widths, from one note to the next on the same
     /// pitch: the spacing of a bivirga or a tristropha.
     private static let repeatedNoteAdvance: CGFloat = 0.92
+    /// The automatic hyphen between syllables is set smaller than the lyrics.
+    private static let automaticHyphenScale: CGFloat = 0.72
 
     public init() {}
 
@@ -353,6 +355,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let lyricHeight = ceil(
             lyricFontSize * Self.lyricLineHeightMultiplier
         )
+        let hyphenFontSize = lyricFontSize * Self.automaticHyphenScale
+        let hyphenWidth = measureLyric("-", fontSize: hyphenFontSize, fontName: lyricFontName)
         let openingInitial = openingInitial(
             in: score,
             annotation: Self.openingLabel(forMode: openingLabel)
@@ -379,6 +383,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             notationScale: notationScale,
             lyricFontSize: lyricFontSize,
             lyricFontName: lyricFontName,
+            hyphenWidth: hyphenWidth,
             openingInitial: openingInitial
         )
         let continuationAvailableWidth = width - sidePadding * 2 - clefColumn - custosColumn
@@ -531,15 +536,10 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     )
 
                 case let .accidental(accidental):
-                    let kind: GregorianGlyphKind = switch accidental.kind {
-                    case .flat: .flat
-                    case .natural: .natural
-                    case .sharp: .sharp
-                    }
                     let y = staffCenter - CGFloat(accidental.pitch - 6) * staffStep
                     glyphs.append(
                         placedGlyph(
-                            kind: kind,
+                            kind: Self.glyphKind(for: accidental.kind),
                             anchor: CGPoint(x: x + unit.anchorOffset, y: y),
                             scale: glyphScale * 0.9
                         )
@@ -667,7 +667,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 sidePadding: sidePadding,
                 notationScale: notationScale,
                 lyricFontSize: lyricFontSize,
-                lyricFontName: lyricFontName
+                lyricFontName: lyricFontName,
+                hyphenFontSize: hyphenFontSize,
+                hyphenWidth: hyphenWidth
             )
         )
         strokes = mergeLedgerLines(strokes, scale: notationScale)
@@ -691,7 +693,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         sidePadding: CGFloat,
         notationScale: CGFloat,
         lyricFontSize: CGFloat,
-        lyricFontName: String
+        lyricFontName: String,
+        hyphenFontSize: CGFloat,
+        hyphenWidth: CGFloat
     ) -> [GregorianPlacedLyric] {
         struct Syllable {
             let unit: LayoutUnit
@@ -712,13 +716,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 return Syllable(unit: unit, neume: neume, lyric: lyric)
             }
         }
-        let hyphenText = "-"
-        let hyphenFontSize = lyricFontSize * 0.72
-        let hyphenWidth = measureLyric(
-            hyphenText,
-            fontSize: hyphenFontSize,
-            fontName: lyricFontName
-        )
         let minimumInlineHyphenGap = hyphenWidth - notationScale
         let minimumUnreservedHyphenGap = hyphenWidth + 1.5 * notationScale
         let lineEndClearance = max(1, 1.5 * notationScale)
@@ -739,14 +736,14 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             let folded = (left + right)
                 .folding(
                     options: [.diacriticInsensitive, .caseInsensitive],
-                    locale: Locale(identifier: "la")
+                    locale: Self.latin
                 )
                 .lowercased()
                 .replacingOccurrences(of: "æ", with: "ae")
                 .replacingOccurrences(of: "œ", with: "oe")
             let letters = Array(folded)
-            let vowels: Set<Character> = ["a", "e", "i", "o", "u", "y"]
-            let diphthongs: Set<String> = ["ae", "au", "oe"]
+            let vowels = Self.foldedVowels
+            let diphthongs = Self.diphthongs
             var nuclei = 0
             var index = 0
             while index < letters.count {
@@ -781,21 +778,19 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         func makeHyphen(
             between previous: Syllable,
             and next: Syllable,
-            originX: CGFloat,
-            renderedWidth: CGFloat,
-            renderedFontSize: CGFloat
+            originX: CGFloat
         ) -> GregorianPlacedLyric {
             let verticalOffset = (
-                lyricFontSize - renderedFontSize
+                lyricFontSize - hyphenFontSize
             ) * Self.lyricLineHeightMultiplier / 2
             return GregorianPlacedLyric(
-                text: hyphenText,
+                text: "-",
                 origin: CGPoint(
                     x: originX,
                     y: previous.lyric.origin.y + verticalOffset
                 ),
-                width: renderedWidth,
-                fontSize: renderedFontSize,
+                width: hyphenWidth,
+                fontSize: hyphenFontSize,
                 fontName: lyricFontName,
                 neumeID: "lyric-hyphen-\(previous.neume.id)-\(next.neume.id)"
             )
@@ -821,9 +816,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     makeHyphen(
                         between: previous,
                         and: next,
-                        originX: gapStart + (availableWidth - hyphenWidth) / 2,
-                        renderedWidth: hyphenWidth,
-                        renderedFontSize: hyphenFontSize
+                        originX: gapStart + (availableWidth - hyphenWidth) / 2
                     )
                 )
             }
@@ -847,9 +840,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 makeHyphen(
                     between: previous,
                     and: next,
-                    originX: gapStart + lineEndClearance,
-                    renderedWidth: hyphenWidth,
-                    renderedFontSize: hyphenFontSize
+                    originX: gapStart + lineEndClearance
                 )
             )
         }
@@ -975,6 +966,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         notationScale: CGFloat,
         lyricFontSize: CGFloat,
         lyricFontName: String,
+        hyphenWidth: CGFloat,
         openingInitial: OpeningInitial?
     ) -> [LayoutUnit] {
         var hasEngravedContent = false
@@ -986,12 +978,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         var previousLyricRightExtent: CGFloat?
         var interveningNotationWidth: CGFloat = 0
         var interveningUnitCount = 0
-        let automaticHyphenFontSize = lyricFontSize * 0.72
-        let automaticHyphenWidth = measureLyric(
-            "-",
-            fontSize: automaticHyphenFontSize,
-            fontName: lyricFontName
-        )
         // Exsurge starts with normal inter-syllabic notation spacing, then
         // joins lyric fragments only when they would collide after modest
         // condensation. Keep this collision test conservative with CoreText's
@@ -1001,16 +987,21 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let interSyllabicSpacing = 7.8125 * notationScale
         let condensedInterSyllabicSpacing = interSyllabicSpacing * 0.8
         let lyricCollisionTolerance = 0.1 * notationScale
+
+        func countIntervening(_ width: CGFloat) {
+            if previousLyricText != nil {
+                interveningNotationWidth += width
+                interveningUnitCount += 1
+            }
+        }
+
         return score.elements.map { element in
             switch element {
             case .clef:
                 previousWasAccidental = false
                 previousWasLyricMark = false
                 let width = hasEngravedContent ? 24 * notationScale : 0
-                if previousLyricText != nil {
-                    interveningNotationWidth += width
-                    interveningUnitCount += 1
-                }
+                countIntervening(width)
                 return LayoutUnit(
                     element: element,
                     width: width,
@@ -1028,18 +1019,12 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 hasEngravedContent = true
                 previousWasAccidental = true
                 previousWasLyricMark = false
-                let kind: GregorianGlyphKind = switch accidental.kind {
-                case .flat: .flat
-                case .natural: .natural
-                case .sharp: .sharp
-                }
-                let definition = GregorianGlyphCatalog.definition(for: kind.catalogName)
+                let definition = GregorianGlyphCatalog.definition(
+                    for: Self.glyphKind(for: accidental.kind).catalogName
+                )
                 let width = definition.bounds.width * glyphScale * 0.9
                     + 4 * notationScale
-                if previousLyricText != nil {
-                    interveningNotationWidth += width
-                    interveningUnitCount += 1
-                }
+                countIntervening(width)
                 return LayoutUnit(
                     element: element,
                     width: width,
@@ -1060,10 +1045,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 previousWasAccidental = false
                 previousWasLyricMark = false
                 let width = (division == .final ? 17 : 12) * notationScale
-                if previousLyricText != nil {
-                    interveningNotationWidth += width
-                    interveningUnitCount += 1
-                }
+                countIntervening(width)
                 return LayoutUnit(
                     element: element,
                     width: width,
@@ -1109,10 +1091,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 let leadingPadding = (mark.startsWord ? 5 : 2) * notationScale
                 let trailingPadding = 5 * notationScale
                 let width = leadingPadding + lyric.width + trailingPadding
-                if previousLyricText != nil {
-                    interveningNotationWidth += width
-                    interveningUnitCount += 1
-                }
+                countIntervening(width)
                 return LayoutUnit(
                     element: element,
                     width: width,
@@ -1203,7 +1182,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                         // connector lane so melismas do not squeeze the
                         // hyphen back out after it has been selected.
                         leadingPadding = max(
-                            automaticHyphenWidth
+                            hyphenWidth
                                 + 2.5 * notationScale
                                     * CGFloat(interveningUnitCount),
                             naturalGap
@@ -1212,8 +1191,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                         leadingPadding = 0
                     }
                 }
-                let trailingPadding: CGFloat = 0
-                let contentWidth = leadingPadding + leftExtent + rightExtent + trailingPadding
+                let contentWidth = leadingPadding + leftExtent + rightExtent
                 let width = neume.startsWord
                     ? max(24 * notationScale, contentWidth)
                     : contentWidth
@@ -1236,9 +1214,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     previousLyricRightExtent = rightExtent
                     interveningNotationWidth = 0
                     interveningUnitCount = 0
-                } else if previousLyricText != nil {
-                    interveningNotationWidth += width
-                    interveningUnitCount += 1
+                } else {
+                    countIntervening(width)
                 }
                 return LayoutUnit(
                     element: element,
@@ -1283,14 +1260,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         case .podatus, .pesQuassus:
             return punctum * 1.15
         case .porrectus, .porrectusFlexus:
-            let interval = max(1, min(4, abs((neume.notes.first?.pitch ?? 0) - (neume.notes.dropFirst().first?.pitch ?? 0))))
-            let name: GregorianGlyphName = switch interval {
-            case 1: .porrectus1
-            case 2: .porrectus2
-            case 3: .porrectus3
-            default: .porrectus4
-            }
-            let swash = GregorianGlyphCatalog.definition(for: name).bounds.width * glyphScale
+            let swash = GregorianGlyphCatalog.definition(for: Self.porrectusSwash(neume)).bounds.width * glyphScale
             return swash + punctum * CGFloat(max(1, neume.notes.count - 2))
         case .climacus, .ancus, .punctaInclinata:
             return punctum + CGFloat(max(0, neume.notes.count - 1)) * punctum * 0.72
@@ -1443,14 +1413,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             noteOrigins = neume.notes.indices.map { originX + CGFloat($0) * punctumWidth * 0.72 }
         case .porrectus where neume.notes.count >= 3,
              .porrectusFlexus where neume.notes.count >= 3:
-            let interval = max(1, min(4, abs(neume.notes[0].pitch - neume.notes[1].pitch)))
-            let name: GregorianGlyphName = switch interval {
-            case 1: .porrectus1
-            case 2: .porrectus2
-            case 3: .porrectus3
-            default: .porrectus4
-            }
-            let swashWidth = GregorianGlyphCatalog.definition(for: name).bounds.width * glyphScale
+            let swashWidth = GregorianGlyphCatalog.definition(for: Self.porrectusSwash(neume)).bounds.width * glyphScale
             noteOrigins = [originX, originX + swashWidth - punctumWidth]
             for index in 2..<neume.notes.count {
                 noteOrigins.append(originX + swashWidth + CGFloat(index - 2) * punctumWidth * 0.92)
@@ -1467,6 +1430,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             repeatedBefore += neume.notes[index].repetitionCount - 1
         }
 
+        let isPorrectus = neume.form == .porrectus || neume.form == .porrectusFlexus
         for (index, note) in neume.notes.enumerated() {
             let y = staffCenter - CGFloat(note.pitch - 6) * staffStep
             let noteOriginX = noteOrigins[index]
@@ -1498,15 +1462,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 glyphName = index == 0 ? .oriscusAsc : (index == 1 ? .podatusUpper : glyphName)
             } else if neume.form == .podatus, neume.notes.count >= 2 {
                 glyphName = index == 0 ? .podatusLower : (index == 1 ? .podatusUpper : glyphName)
-            } else if (neume.form == .porrectus || neume.form == .porrectusFlexus), index == 0 {
-                let interval = max(1, min(4, abs(neume.notes[0].pitch - neume.notes[1].pitch)))
-                glyphName = switch interval {
-                case 1: .porrectus1
-                case 2: .porrectus2
-                case 3: .porrectus3
-                default: .porrectus4
-                }
-            } else if (neume.form == .porrectus || neume.form == .porrectusFlexus), index == 1 {
+            } else if isPorrectus, index == 0 {
+                glyphName = Self.porrectusSwash(neume)
+            } else if isPorrectus, index == 1 {
                 // The porrectus swash already engraves the first two notes.
                 let frame = CGRect(
                     x: noteOriginX,
@@ -1519,15 +1477,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             }
 
             let definition = GregorianGlyphCatalog.definition(for: glyphName)
-            let anchorX: CGFloat
-            if glyphName == .podatusUpper {
-                anchorX = noteOriginX + definition.bounds.width * glyphScale
-            } else {
-                anchorX = noteOriginX + definition.origin.x * glyphScale
-            }
             let first = placedGlyph(
                 kind: .catalog(glyphName),
-                anchor: CGPoint(x: anchorX, y: y),
+                anchor: CGPoint(x: noteOriginX + definition.origin.x * glyphScale, y: y),
                 scale: glyphScale,
                 eventID: note.id
             )
@@ -1544,11 +1496,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             let noteFrame = repetitions.reduce(first.frame) { $0.union($1.frame) }
 
             if let accidental = note.accidental {
-                let accidentalKind: GregorianGlyphKind = switch accidental {
-                case .flat: .flat
-                case .natural: .natural
-                case .sharp: .sharp
-                }
+                let accidentalKind = Self.glyphKind(for: accidental)
                 let accidentalScale = glyphScale * 0.9
                 let accidentalDefinition = GregorianGlyphCatalog.definition(
                     for: accidentalKind.catalogName
@@ -1569,9 +1517,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 result.inkFrame = result.inkFrame.union(accidentalGlyph.frame)
             }
 
-            if index > 0,
-               ![GregorianNeumeForm.podatus, .pesQuassus, .porrectus, .porrectusFlexus]
-                .contains(neume.form) {
+            if index > 0, !Self.connectedForms.contains(neume.form) {
                 let previous = neume.notes[index - 1]
                 if previous.pitch != note.pitch {
                     let previousY = staffCenter - CGFloat(previous.pitch - 6) * staffStep
@@ -1592,20 +1538,18 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             result.glyphs.append(contentsOf: repetitions)
             result.inkFrame = result.inkFrame.union(noteFrame)
 
-            if note.moraCount > 0 {
-                for moraIndex in 0..<note.moraCount {
-                    let mora = placedGlyph(
-                        kind: .mora,
-                        anchor: CGPoint(
-                            x: placed.frame.maxX + (5 + CGFloat(moraIndex) * 3.5) * notationScale,
-                            y: y
-                        ),
-                        scale: glyphScale * 0.72,
-                        eventID: note.id
-                    )
-                    result.glyphs.append(mora)
-                    result.inkFrame = result.inkFrame.union(mora.frame)
-                }
+            for moraIndex in 0..<note.moraCount {
+                let mora = placedGlyph(
+                    kind: .mora,
+                    anchor: CGPoint(
+                        x: placed.frame.maxX + (5 + CGFloat(moraIndex) * 3.5) * notationScale,
+                        y: y
+                    ),
+                    scale: glyphScale * 0.72,
+                    eventID: note.id
+                )
+                result.glyphs.append(mora)
+                result.inkFrame = result.inkFrame.union(mora.frame)
             }
             if note.hasEpisema {
                 let above = note.episemaPosition == .above
@@ -1676,6 +1620,39 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             return note.liquescence == .none ? .oriscusAsc : .oriscusLiquescent
         case .stropha: return .stropha
         case .custos: return .custosShort
+        }
+    }
+
+    /// Forms whose glyphs join their notes themselves, with no connector
+    /// drawn between them.
+    private static let connectedForms: Set<GregorianNeumeForm> = [
+        .podatus, .pesQuassus, .porrectus, .porrectusFlexus
+    ]
+
+    /// The swash that engraves a porrectus's first two notes, by their interval.
+    private static func porrectusSwash(_ neume: GregorianNeume) -> GregorianGlyphName {
+        let first = neume.notes.first?.pitch ?? 0
+        let second = neume.notes.dropFirst().first?.pitch ?? 0
+        return switch max(1, min(4, abs(first - second))) {
+        case 1: .porrectus1
+        case 2: .porrectus2
+        case 3: .porrectus3
+        default: .porrectus4
+        }
+    }
+
+    // The letters a syllable is sung on: its vowels, accented or not; and the
+    // same, folded, with the diphthongs that make one syllable of two vowels.
+    private static let lyricVowels = CharacterSet(charactersIn: "aeiouyæœáéíóúýAEIOUYÆŒÁÉÍÓÚÝ")
+    private static let foldedVowels: Set<Character> = ["a", "e", "i", "o", "u", "y"]
+    private static let diphthongs: Set<String> = ["ae", "au", "oe"]
+    private static let latin = Locale(identifier: "la")
+
+    private static func glyphKind(for accidental: GregorianAccidental) -> GregorianGlyphKind {
+        switch accidental {
+        case .flat: .flat
+        case .natural: .natural
+        case .sharp: .sharp
         }
     }
 
@@ -1785,7 +1762,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         guard !lyric.isEmpty else { return (0, 0) }
         let width = measureLyric(lyric, style: style, fontSize: fontSize, fontName: fontName)
         let characters = Array(lyric)
-        let vowelSet = CharacterSet(charactersIn: "aeiouyæœáéíóúýAEIOUYÆŒÁÉÍÓÚÝ")
+        let vowelSet = Self.lyricVowels
         let nucleusStart = characters.firstIndex {
             $0.unicodeScalars.contains { vowelSet.contains($0) }
         } ?? characters.startIndex

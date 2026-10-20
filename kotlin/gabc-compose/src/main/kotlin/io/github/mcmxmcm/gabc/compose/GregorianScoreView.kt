@@ -73,14 +73,17 @@ private fun ScoreView(
     BoxWithConstraints(modifier.fillMaxWidth()) {
         if (!constraints.hasBoundedWidth) return@BoxWithConstraints
         val width = maxWidth.value
-        val prepared = remember(source, metrics, mode, width) {
+        // The score is parsed once, and laid out again at each width.
+        val parsed = remember(source) {
             runCatching {
-                val score = when (source) {
+                when (source) {
                     is Source.Gabc -> GregorianScoreParser.parse(source.gabc, source.scoreId)
                     is Source.Score -> source.score
                 }
-                GregorianPreparedScore.prepare(context, score, width, metrics, mode)
             }
+        }
+        val prepared = remember(parsed, metrics, mode, width) {
+            parsed.mapCatching { GregorianPreparedScore.prepare(context, it, width, metrics, mode) }
         }
         prepared.fold(
             onSuccess = { GregorianScoreCanvas(it, highlightedEventId = highlightedEventId, onTapNeume = onTapNeume) },
@@ -88,7 +91,7 @@ private fun ScoreView(
                 BasicText(
                     "Notation unavailable\n${error.message.orEmpty()}",
                     modifier = Modifier.fillMaxWidth().heightIn(min = 112.dp),
-                    style = TextStyle(color = (LocalGregorianScoreStyle.current ?: GregorianScoreStyle.standard()).ink, textAlign = TextAlign.Center),
+                    style = TextStyle(color = currentScoreStyle().ink, textAlign = TextAlign.Center),
                 )
             },
         )

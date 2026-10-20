@@ -48,9 +48,11 @@ public fun GregorianLyricFont.typeface(context: Context, style: GregorianLyricSt
  * its own. Every font name is measured in EB Garamond: an app that names another face measures with its own.
  */
 public fun GregorianLyricFont.measurer(context: Context): GregorianLyricMeasurer {
+    // The application's context, which a measurer kept for long can hold without keeping an activity alive.
+    val appContext = context.applicationContext
     val paints = HashMap<GregorianLyricStyle, Paint>()
     return GregorianLyricMeasurer { text, style, fontSize, _ ->
-        val paint = paints.getOrPut(style) { Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = typeface(context, style) } }
+        val paint = paints.getOrPut(style) { Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = typeface(appContext, style) } }
         paint.textSize = fontSize
         paint.measureText(text)
     }

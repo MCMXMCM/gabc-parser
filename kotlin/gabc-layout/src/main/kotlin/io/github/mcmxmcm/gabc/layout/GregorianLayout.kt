@@ -167,7 +167,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
     ): GregorianLayout {
         val requestedWidth = width
         val notationScale = GregorianLayoutMetrics.clampedNotationScale(metrics.notationScale).toFloat()
-        val lyricScale = max(0.5f, min(3.5f, metrics.lyricScale.toFloat() * notationScale))
+        val lyricScale = (metrics.lyricScale.toFloat() * notationScale).coerceIn(0.5f, 3.5f)
         val lyricFontName = metrics.lyricFontName
         val columnWidth = max(240f, requestedWidth)
         val glyphScale = notationScale / 16
@@ -192,7 +192,9 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             0f
         }
 
-        val units = makeUnits(score, glyphScale, notationScale, lyricFontSize, lyricFontName, openingInitial)
+        val hyphenFontSize = lyricFontSize * AUTOMATIC_HYPHEN_SCALE
+        val hyphenWidth = measureLyric("-", fontSize = hyphenFontSize, fontName = lyricFontName)
+        val units = makeUnits(score, glyphScale, notationScale, lyricFontSize, lyricFontName, hyphenWidth, openingInitial)
         val continuationAvailableWidth = columnWidth - sidePadding * 2 - clefColumn - custosColumn
         val lines = breakLines(units, continuationAvailableWidth - initialColumn, continuationAvailableWidth, notationScale)
         val lineVerticalMetrics = lines.mapIndexed { lineIndex, lineUnits ->
@@ -354,7 +356,9 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             }
         }
 
-        lyrics += automaticLyricHyphens(lines, lyrics, columnWidth, sidePadding, notationScale, lyricFontSize, lyricFontName)
+        lyrics += automaticLyricHyphens(
+            lines, lyrics, columnWidth, sidePadding, notationScale, lyricFontSize, lyricFontName, hyphenFontSize, hyphenWidth,
+        )
         strokes = mergeLedgerLines(strokes, notationScale).toMutableList()
         val neumes = makeHitFrames(rawNeumes, columnWidth, notationScale)
         return GregorianLayout(
@@ -377,6 +381,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         notationScale: Float,
         lyricFontSize: Float,
         lyricFontName: String,
+        hyphenFontSize: Float,
+        hyphenWidth: Float,
     ): List<GregorianPlacedLyric> {
         class Syllable(val unit: LayoutUnit, val neume: GregorianNeume, val lyric: GregorianPlacedLyric)
 
@@ -390,8 +396,6 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             }
         }
         val hyphenText = "-"
-        val hyphenFontSize = lyricFontSize * 0.72f
-        val hyphenWidth = measureLyric(hyphenText, fontSize = hyphenFontSize, fontName = lyricFontName)
         val minimumInlineHyphenGap = hyphenWidth - notationScale
         val minimumUnreservedHyphenGap = hyphenWidth + 1.5f * notationScale
         val lineEndClearance = max(1f, 1.5f * notationScale)
@@ -406,7 +410,6 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                 .replace("æ", "ae")
                 .replace("œ", "oe")
             val vowels = "aeiouy"
-            val diphthongs = setOf("ae", "au", "oe")
             var nuclei = 0
             var index = 0
             while (index < folded.length) {
@@ -420,7 +423,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                     continue
                 }
                 nuclei += 1
-                index += if (index + 1 < folded.length && folded.substring(index, index + 2) in diphthongs) 2 else 1
+                index += if (index + 1 < folded.length && folded.substring(index, index + 2) in DIPHTHONGS) 2 else 1
             }
             return nuclei > 1
         }
@@ -564,6 +567,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         notationScale: Float,
         lyricFontSize: Float,
         lyricFontName: String,
+        hyphenWidth: Float,
         openingInitial: OpeningInitial?,
     ): List<LayoutUnit> {
         var hasEngravedContent = false
@@ -575,8 +579,6 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         var previousLyricRightExtent: Float? = null
         var interveningNotationWidth = 0f
         var interveningUnitCount = 0
-        val automaticHyphenFontSize = lyricFontSize * 0.72f
-        val automaticHyphenWidth = measureLyric("-", fontSize = automaticHyphenFontSize, fontName = lyricFontName)
         // Exsurge starts with normal inter-syllabic notation spacing, then joins lyric fragments only when they would
         // collide after modest condensation. The collision test is kept conservative with EB Garamond's metrics; the
         // later line pass can still condense ordinary (non-connector) gaps further. A connector is kept when the
@@ -681,13 +683,12 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                             val naturalGap = naturalDistance - previousRightExtent - leftExtent
                             // Line fitting may condense every intervening boundary. That allowance is reserved as part
                             // of the connector's lane, so melismas do not squeeze the hyphen back out once it's chosen.
-                            max(automaticHyphenWidth + 2.5f * notationScale * interveningUnitCount, naturalGap)
+                            max(hyphenWidth + 2.5f * notationScale * interveningUnitCount, naturalGap)
                         } else {
                             0f
                         }
                     }
-                    val trailingPadding = 0f
-                    val contentWidth = leadingPadding + leftExtent + rightExtent + trailingPadding
+                    val contentWidth = leadingPadding + leftExtent + rightExtent
                     val width = if (neume.startsWord) max(24 * notationScale, contentWidth) else contentWidth
                     val centeringInset = (width - contentWidth) / 2
                     val anchorOffset = centeringInset + leadingPadding + leftExtent
@@ -901,11 +902,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             }
 
             val definition = GregorianGlyphCatalog.definition(glyphName)
-            val anchorX = if (glyphName == GregorianGlyphName.PodatusUpper) {
-                noteOriginX + definition.bounds.width * glyphScale
-            } else {
-                noteOriginX + definition.origin.x * glyphScale
-            }
+            val anchorX = noteOriginX + definition.origin.x * glyphScale
             val first = placedGlyph(GregorianGlyphKind.Catalog(glyphName), GregorianPoint(anchorX, y), glyphScale, note.id)
             // The same glyph again for each further time the note is written.
             val repetitions = (1 until max(1, note.repetitionCount)).map { repetition ->
@@ -1135,8 +1132,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
     }
 
     private fun mergeLedgerLines(strokes: List<GregorianPlacedStroke>, scale: Float): List<GregorianPlacedStroke> {
-        val nonLedger = strokes.filter { it.kind != GregorianStrokeKind.Ledger }
-        val ledgers = strokes.filter { it.kind == GregorianStrokeKind.Ledger }.sortedWith { a, b ->
+        val (unsortedLedgers, nonLedger) = strokes.partition { it.kind == GregorianStrokeKind.Ledger }
+        val ledgers = unsortedLedgers.sortedWith { a, b ->
             if (abs(a.start.y - b.start.y) < 0.1f) a.start.x.compareTo(b.start.x) else a.start.y.compareTo(b.start.y)
         }
         val merged = mutableListOf<GregorianPlacedStroke>()
@@ -1194,6 +1191,9 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
     public companion object {
         private const val LYRIC_LINE_HEIGHT_MULTIPLIER = 1.23f
 
+        /** The size of an automatic hyphen, as a share of the lyric's. */
+        private const val AUTOMATIC_HYPHEN_SCALE = 0.72f
+
         /** The advance, in punctum widths, from one note to the next on the same pitch: the spacing of a bivirga or a tristropha. */
         private const val REPEATED_NOTE_ADVANCE = 0.92f
 
@@ -1205,6 +1205,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         // regular expressions don't take the flag that widens it.
         private val SPACES = Regex("[\t\n\u000B\u000C\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+")
         private val COMBINING_MARKS = Regex("""\p{M}+""")
+        private val DIPHTHONGS = setOf("ae", "au", "oe")
         private val CONNECTED_FORMS = setOf(
             GregorianNeumeForm.Podatus,
             GregorianNeumeForm.PesQuassus,
@@ -1233,7 +1234,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         }
 
         /** The gaps of a staff that may be closed a little to fit it: those between two things that take room, where no hyphen has been given its lane. A staff is broken, and set, by the same count. */
-        private fun condensibleGaps(units: List<LayoutUnit>): List<Int> = units.indices.toList().dropLast(1).filter {
+        private fun condensibleGaps(units: List<LayoutUnit>): List<Int> = (0 until units.lastIndex).filter {
             units[it].width > 0 && units[it + 1].width > 0 && !units[it + 1].showsInlineHyphenFromPrevious
         }
 

@@ -170,7 +170,7 @@ public data class GregorianScore(val elements: List<GregorianNotationElement>) {
                     else -> Unit
                 }
             }
-            return Regex("$UNICODE_SPACE+([,.;:!?])").replace(result.toString(), "$1")
+            return SPACE_BEFORE_PUNCTUATION.replace(result.toString(), "$1")
         }
 }
 
@@ -180,6 +180,9 @@ public data class GregorianScore(val elements: List<GregorianNotationElement>) {
  */
 internal const val UNICODE_SPACE: String =
     "[\t\n\u000B\u000C\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]"
+
+/** Spaces before punctuation, which a score's lyric text closes up. */
+private val SPACE_BEFORE_PUNCTUATION = Regex("$UNICODE_SPACE+([,.;:!?])")
 
 public sealed class GregorianScoreParserError(message: String) : Exception(message) {
     public data class UnterminatedNotation(val offset: Int) :
@@ -208,6 +211,9 @@ public object GregorianScoreParser {
     private val accented = Regex("""\*([^*]+)\*""")
 
     private val spaces = Regex("$UNICODE_SPACE+")
+
+    /** The lyric marks set as rubrics when they stand without notes. */
+    private val rubrics = setOf("*", "†", "‡", "+", "℣.", "℟.")
 
     /**
      * Parses a GABC score, numbering its written notes as events in the order written.
@@ -247,12 +253,15 @@ public object GregorianScoreParser {
         val offsets = CharacterOffsets(body)
         val compiledEvents = (source as? EventSource.Compiled)?.events
         val eventPrefix = (source as? EventSource.Numbered)?.prefix ?: ""
+        // The syllable of each compiled event, by its name; the first event given a name keeps it.
+        val compiledSyllables = compiledEvents?.let { events ->
+            HashMap<String, String>().apply { for (event in events) getOrPut(event.id) { event.syllableId } }
+        }
         val elements = mutableListOf<GregorianNotationElement>()
         var cursor = 0
         var eventIndex = 0
         // Numbered events give each group that writes a note a syllable.
         var syllableIndex = 0
-        var sourceOffset = 0
         // A word begins where a space stands before a group, and a clef or a bar that stands there alone does not
         // use the beginning up: in "mus.(h.) (:)De(g)us" the bar ends one word and "De" begins the next, though no
         // space follows the bar. Notes without words are the melisma of the syllable before them, and leave it a
@@ -262,7 +271,8 @@ public object GregorianScoreParser {
         while (true) {
             val open = body.indexOf('(', cursor)
             if (open < 0) break
-            val lyricSource = body.substring(cursor, open)
+            // The lyric is read without its markup tags (`<i>`, `<sp>`).
+            val lyricSource = tag.replace(body.substring(cursor, open), "")
             val close = body.indexOf(')', open)
             if (close < 0) throw GregorianScoreParserError.UnterminatedNotation(offsets[open])
 
@@ -340,8 +350,8 @@ public object GregorianScoreParser {
                         val first = mappedNotes.firstOrNull() ?: continue
                         val event = mappedEvents.first()
                         val neumeLyric = if (appliedLyric) "" else lyric
-                        if (neumeLyric.isNotEmpty() && compiledEvents != null &&
-                            mappedNotes.any { mapped -> compiledEvents.firstOrNull { it.id == mapped.id }?.syllableId != event.syllableId }
+                        if (neumeLyric.isNotEmpty() && compiledSyllables != null &&
+                            mappedNotes.any { compiledSyllables[it.id] != event.syllableId }
                         ) {
                             throw GregorianScoreParserError.EventSyllableMismatch(first.id)
                         }
@@ -370,12 +380,10 @@ public object GregorianScoreParser {
             if (hasNotes) syllableIndex += 1
 
             cursor = close + 1
-            sourceOffset = offsets[cursor]
         }
 
-        if (compiledEvents != null) {
-            if (eventIndex != compiledEvents.size) throw GregorianScoreParserError.TimelineMismatch(compiledEvents.size, eventIndex)
-            if (elements.isEmpty() && compiledEvents.isNotEmpty()) throw GregorianScoreParserError.UnsupportedToken("empty score", sourceOffset)
+        if (compiledEvents != null && eventIndex != compiledEvents.size) {
+            throw GregorianScoreParserError.TimelineMismatch(compiledEvents.size, eventIndex)
         }
         return GregorianScore(elements)
     }
@@ -423,32 +431,29 @@ public object GregorianScoreParser {
             return character == 'c' && at + 2 < characters.length && characters[at + 1] == 'b' && isNumber(characters[at + 2])
         }
 
+        // A bracketed sign (`[alt:...]`) is passed over; one left open runs to the end of the group.
+        fun skipBracket(from: Int): Int {
+            val close = characters.indexOf(']', from + 1)
+            return if (close >= 0) close + 1 else characters.length
+        }
+
         while (index < characters.length) {
             val character = characters[index]
 
             if (character == '[') {
                 flushNotes()
-                val close = characters.indexOf(']', index + 1)
-                index = if (close >= 0) close + 1 else characters.length
+                index = skipBracket(index)
                 continue
             }
-            if (character.isWhitespace() || character == '/') {
-                flushNotes()
-                index += 1
-                continue
-            }
-            if (character == '!') {
+            if (character.isWhitespace() || character == '/' || character == '!') {
                 flushNotes()
                 index += 1
                 continue
             }
 
-            val isFlatCClef = character == 'c' && index + 2 < characters.length &&
-                characters[index + 1] == 'b' && isNumber(characters[index + 2])
-            if ((character == 'c' || character == 'f') && index + 1 < characters.length &&
-                (isNumber(characters[index + 1]) || isFlatCClef)
-            ) {
+            if (isClefAt(index)) {
                 flushNotes()
+                val isFlatCClef = characters[index + 1] == 'b'
                 val lineIndex = index + if (isFlatCClef) 2 else 1
                 val token = characters.substring(index, lineIndex + 1)
                 val line = characters[lineIndex].takeIf { it in '0'..'9' }?.digitToInt()
@@ -516,8 +521,7 @@ public object GregorianScoreParser {
             while (index < characters.length) {
                 val next = characters[index]
                 if (next == '[') {
-                    val close = characters.indexOf(']', index + 1)
-                    index = if (close >= 0) close + 1 else characters.length
+                    index = skipBracket(index)
                     continue
                 }
                 if (next.isWhitespace() || next in "/:;,`zZ" || pitchValue(next) != null || isClefAt(index)) break
@@ -621,7 +625,7 @@ public object GregorianScoreParser {
     private fun isIgnorableControl(character: Char): Boolean = isNumber(character) || character in "'!@]-+_*†(."
 
     private fun cleanLyric(source: String): String {
-        var text = tag.replace(source, "").replace("{", "").replace("}", "")
+        var text = source.replace("{", "").replace("}", "")
         // Psalm-tone sources use paired underscores for preparatory syllables and paired asterisks for accented
         // syllables. These delimiters describe pointing and style and are not lyric text. The paired patterns leave
         // a standalone liturgical asterisk unchanged.
@@ -631,9 +635,8 @@ public object GregorianScoreParser {
     }
 
     private fun lyricStyle(source: String): GregorianLyricStyle {
-        val withoutTags = tag.replace(source, "")
-        if (Regex("""\*[^*]+\*""").containsMatchIn(withoutTags)) return GregorianLyricStyle.Accented
-        if (preparatory.containsMatchIn(withoutTags)) return GregorianLyricStyle.Preparatory
+        if (accented.containsMatchIn(source)) return GregorianLyricStyle.Accented
+        if (preparatory.containsMatchIn(source)) return GregorianLyricStyle.Preparatory
         return GregorianLyricStyle.Regular
     }
 
@@ -645,12 +648,12 @@ public object GregorianScoreParser {
 
     private fun standaloneLyricStyle(lyric: String, parsedStyle: GregorianLyricStyle): GregorianLyricStyle {
         if (parsedStyle != GregorianLyricStyle.Regular) return parsedStyle
-        return if (lyric in setOf("*", "†", "‡", "+", "℣.", "℟.")) GregorianLyricStyle.Rubric else GregorianLyricStyle.Regular
+        return if (lyric in rubrics) GregorianLyricStyle.Rubric else GregorianLyricStyle.Regular
     }
 
     private fun lyricStartsWord(source: String, isFirst: Boolean): Boolean {
         if (isFirst) return true
-        return tag.replace(source, "").firstOrNull()?.isWhitespace() == true
+        return source.firstOrNull()?.isWhitespace() == true
     }
 }
 
@@ -689,7 +692,6 @@ public object GregorianNeumeClassifier {
         val directions = pitches.zipWithNext { from, to -> direction(from, to) }
         val allEqual = pitches.toSet().size == 1
         val allInclinata = notes.all { it.shape == GregorianNoteShape.Inclinatum }
-        val allStropha = notes.all { it.shape == GregorianNoteShape.Stropha }
         val allVirga = notes.all { it.shape == GregorianNoteShape.Virga }
         // A note written twice or thrice (`hvv`, `hsss`) counts as so many.
         val writtenCount = notes.sumOf { it.repetitionCount }
@@ -703,7 +705,6 @@ public object GregorianNeumeClassifier {
                 else -> GregorianNeumeForm.Punctum
             }
         }
-        if (allEqual && allStropha) return if (writtenCount >= 3) GregorianNeumeForm.Tristropha else GregorianNeumeForm.Distropha
         if (allEqual && allVirga) return if (writtenCount >= 3) GregorianNeumeForm.Trivirga else GregorianNeumeForm.Bivirga
         if (allEqual) return if (writtenCount >= 3) GregorianNeumeForm.Tristropha else GregorianNeumeForm.Distropha
         if (notes.size == 2) {
@@ -737,9 +738,10 @@ public object GregorianNeumeClassifier {
         if (directions.first() == 1 && directions.drop(1).all { it < 0 }) return GregorianNeumeForm.PesSubpunctis
         return GregorianNeumeForm.Punctum
     }
-
-    private fun direction(from: Int, to: Int): Int = if (to > from) 1 else if (to < from) -1 else 0
 }
+
+/** Whether a melody rises (1), falls (-1) or keeps its pitch (0) from one note to the next. */
+private fun direction(from: Int, to: Int): Int = if (to > from) 1 else if (to < from) -1 else 0
 
 /**
  * Splits a continuous GABC note run into the named forms accepted by the native compositor. This is the native
@@ -847,8 +849,6 @@ public object GregorianNeumeSegmenter {
         }
         return result
     }
-
-    private fun direction(from: Int, to: Int): Int = if (to > from) 1 else if (to < from) -1 else 0
 
     private fun repeatedShapeCount(notes: List<GregorianNote>, index: Int, shape: GregorianNoteShape, pitch: Int, maximum: Int): Int {
         var count = 0

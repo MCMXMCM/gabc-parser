@@ -94,19 +94,12 @@ public struct GregorianScoreDrawing: Sendable {
                     batch.occupiedFrames.allSatisfy {
                         !$0.intersects(occupiedFrame)
                     }
+                } ?? glyphBatches.endIndex
+                if batchIndex == glyphBatches.endIndex {
+                    glyphBatches.append(GlyphBatch())
                 }
-
-                if let batchIndex {
-                    glyphBatches[batchIndex].path.addPath(
-                        GregorianGlyphLibrary.path(for: glyph)
-                    )
-                    glyphBatches[batchIndex].occupiedFrames.append(occupiedFrame)
-                } else {
-                    var batch = GlyphBatch()
-                    batch.path.addPath(GregorianGlyphLibrary.path(for: glyph))
-                    batch.occupiedFrames.append(occupiedFrame)
-                    glyphBatches.append(batch)
-                }
+                glyphBatches[batchIndex].path.addPath(GregorianGlyphLibrary.path(for: glyph))
+                glyphBatches[batchIndex].occupiedFrames.append(occupiedFrame)
             }
             glyphPaths = glyphBatches.map(\.path)
             self.lyrics = lyrics

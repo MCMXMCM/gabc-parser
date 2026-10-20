@@ -30,11 +30,19 @@ public struct GregorianScoreView: View {
         let result: Result<GregorianPreparedScore, any Error>
     }
 
+    /// The score parsed from a source, kept while only the width or the
+    /// metrics change.
+    private struct Parse {
+        let source: Source
+        let result: Result<GregorianScore, any Error>
+    }
+
     private let inputs: Inputs
     private let highlightedEventID: String?
     private let onTapNeume: ((GregorianNeumePlacement) -> Void)?
 
     @State private var width: CGFloat?
+    @State private var parse: Parse?
     @State private var preparation: Preparation?
 
     /// - Parameters:
@@ -120,16 +128,27 @@ public struct GregorianScoreView: View {
         let request = Request(inputs: inputs, width: width)
         guard preparation?.request != request else { return }
         let inputs = inputs
+        let parsed: Parse
+        if let parse, parse.source == inputs.source {
+            parsed = parse
+        } else {
+            parsed = Parse(
+                source: inputs.source,
+                result: Result {
+                    switch inputs.source {
+                    case let .gabc(gabc, scoreID):
+                        try GregorianScoreParser.parse(gabc: gabc, scoreID: scoreID)
+                    case let .score(score):
+                        score
+                    }
+                }
+            )
+            parse = parsed
+        }
         preparation = Preparation(
             request: request,
-            result: Result {
-                let score: GregorianScore = switch inputs.source {
-                case let .gabc(gabc, scoreID):
-                    try GregorianScoreParser.parse(gabc: gabc, scoreID: scoreID)
-                case let .score(score):
-                    score
-                }
-                return GregorianPreparedScore(
+            result: parsed.result.map { score in
+                GregorianPreparedScore(
                     score: score,
                     width: width,
                     metrics: inputs.metrics,
