@@ -1,18 +1,34 @@
 # gabc-parser
 
-Parse [GABC](https://gregorio-project.github.io/gabc/) chant notation in
-Swift, engrave it natively, and draw it in SwiftUI; or do the same in Kotlin,
-and draw it with Jetpack Compose on Android (see
-[Kotlin and Android](#kotlin-and-android)).
+Parse [GABC](https://gregorio-project.github.io/gabc/) chant notation,
+engrave it natively, and draw it: in Swift with SwiftUI on iOS and macOS, and
+in Kotlin with Jetpack Compose on Android.
 
 GABC is the plain-text notation of the Gregorio project, in which GregoBase
-and most digital chant sources are written. This package reads a score into
-a model of clefs, neumes, lyrics and divisions; lays it out on four-line
-staffs at any width, drawing Exsurge's glyph outlines as vector paths; and
-draws the result in SwiftUI. There is no web view, JavaScript or music font
-in the rendering path.
+and most digital chant sources are written. Each library reads a score into a
+model of clefs, neumes, lyrics and divisions; lays it out on four-line staffs
+at any width, drawing Exsurge's glyph outlines as vector paths; and draws the
+result. There is no web view, JavaScript or music font in the rendering path.
 
-## Libraries
+The Swift and Kotlin libraries are one design in two languages. They are kept
+to the same behaviour, run the same tests against the same fixtures, and
+engrave from one generated glyph catalog, so a score is laid out alike on an
+iPhone and an Android phone.
+
+| | Swift | Kotlin |
+| --- | --- | --- |
+| Parsing | `GABCParser` | `gabc-parser` |
+| Engraving | `GABCLayout` | `gabc-layout` |
+| The lyrics' face, EB Garamond | `GABCLyricFont` | `gabc-lyric-font` |
+| Drawing | `GABCSwiftUI` (SwiftUI) | `gabc-compose` (Jetpack Compose) |
+| Requires | Swift 6 tools (Xcode 16 or later); iOS 17 or macOS 14 | Java 17; Android 8 (API 26) for the font and the views |
+| Installed with | Swift Package Manager | Gradle, from [JitPack](https://jitpack.io) |
+
+- [Swift](#swift)
+- [Kotlin](#kotlin)
+- [GABC coverage](#gabc-coverage), the same in both
+
+## Swift
 
 | Library | What it gives you |
 | --- | --- |
@@ -25,16 +41,14 @@ Each library re-exports the one it builds on, so `import GABCSwiftUI` is all
 a SwiftUI app needs. An app that bundles EB Garamond itself, and uses
 `GABCLayout` without `GABCSwiftUI`, need not link `GABCLyricFont`.
 
-Requires Swift 6 tools (Xcode 16 or later) and iOS 17 or macOS 14.
-
-## Installation
+### Installation
 
 Add the package in Xcode (File ▸ Add Package Dependencies…, with
 `https://github.com/MCMXMCM/gabc-parser.git`) or in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.2.0")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.3.0")
 ],
 targets: [
     .target(
@@ -44,7 +58,7 @@ targets: [
 ]
 ```
 
-## Drawing a score
+### Drawing a score
 
 ```swift
 import GABCSwiftUI
@@ -92,7 +106,7 @@ GABCSwiftUI registers from `GABCLyricFont`. Another font can be named with
 `lyricFontName`; each placed lyric records the font it was measured in, and is
 drawn in it. The face must be registered before a score is laid out.
 
-### Long documents
+#### Long documents
 
 `GregorianScoreView` lays out on the main actor. For many scores, prepare
 them in the background (`GregorianPreparedScore` is `Sendable`) and draw them
@@ -107,7 +121,7 @@ let prepared = try await Task.detached {
 GregorianScoreCanvas(prepared)
 ```
 
-### Core Graphics
+#### Core Graphics
 
 Without SwiftUI, draw the layout yourself. Its origin is at the top left,
 with y running down, in points:
@@ -133,7 +147,7 @@ for glyph in layout.glyphs {
 // left at lyric.origin. Rubrics have lyric.style == .rubric.
 ```
 
-## Parsing
+### Parsing
 
 ```swift
 import GABCParser
@@ -149,7 +163,7 @@ print(score.lyricText) // Deus in adjutórium meum inténde.
 ℣., ℟.) and line breaks in order with the neumes. A note's `pitch` counts
 staff steps from `a` (0) to `m` (12); its `relativePitch` counts them from `h`.
 
-### Compiled timelines
+#### Compiled timelines
 
 A content pipeline that already names each note, for playback say, can pass
 its timeline: conform its event type to `GregorianTimelineEvent` (`id`,
@@ -159,11 +173,7 @@ event for each pitch letter written; the parse fails if the notation writes
 more or fewer. Without a timeline, the parser names the notes and syllables
 itself, one syllable for each notation group that writes a note.
 
-## Kotlin and Android
-
-`kotlin/` holds a native Kotlin version of the package, built the same way and
-kept to the same behaviour: a port of the Swift sources, carrying the Swift
-tests, engraving from the same generated glyph catalog.
+## Kotlin
 
 | Module | The Swift library | What it gives you |
 | --- | --- | --- |
@@ -174,14 +184,13 @@ tests, engraving from the same generated glyph catalog.
 
 Each module brings in the one it builds on. An app that bundles EB Garamond
 itself, and draws the layout itself, needs only `gabc-layout`, with a
-`GregorianLyricMeasurer` of its own. The layout's geometry is its own
-(`GregorianPoint`, `GregorianSize`, `GregorianRect`), named as Compose names
-its own; `gabc-compose` converts it (`toOffset()`, `toRect()`). A layout point
-is drawn as a density-independent pixel. Names follow Kotlin's conventions:
-`eventId` for `eventID`, `GregorianNoteShape.Virga` for `.virga`.
-
-The parser and the layout need Java 17; the Android libraries, Android 8
-(API 26).
+`GregorianLyricMeasurer` of its own. The parser and the layout are plain
+Kotlin, so a server or desktop app on the JVM can parse and engrave without
+Android. The layout's geometry is its own (`GregorianPoint`, `GregorianSize`,
+`GregorianRect`), named as Compose names its own; `gabc-compose` converts it
+(`toOffset()`, `toRect()`). A layout point is drawn as a density-independent
+pixel. Names follow Kotlin's conventions: `eventId` for `eventID`,
+`GregorianNoteShape.Virga` for `.virga`.
 
 ### Installation
 
@@ -206,6 +215,9 @@ dependencies {
 }
 ```
 
+Depend on `gabc-parser` or `gabc-layout` instead for the parser or the
+engraver alone.
+
 ### Drawing a score
 
 ```kotlin
@@ -224,7 +236,8 @@ fun OpeningVersicle() {
 ```
 
 The view lays the score out across the width it is offered and is as tall as
-its staffs, as the SwiftUI view is. Colors come from
+its staffs, as the SwiftUI view is; a tap, a highlight, `scoreId` and `mode`
+work as they do there. Colors come from
 `GregorianScoreStyleProvider(GregorianScoreStyle(ink, rubric, highlight))`,
 warm black and red by default and lightened in a dark theme.
 `GregorianLayoutMetrics.lyricScale(fontScale)` follows the system's font size.
@@ -232,7 +245,7 @@ For long documents, prepare scores in the background
 (`GregorianPreparedScore.prepare(context, score, width)`) and draw them with
 `GregorianScoreCanvas`.
 
-### Without Compose
+#### Without Compose
 
 ```kotlin
 val score = GregorianScoreParser.parse(gabc)
@@ -250,28 +263,47 @@ for (glyph in layout.glyphs) {
 On the JVM, without Android, give the engine a `GregorianLyricMeasurer` that
 measures with the JDK's text layout or the server's own.
 
+### Parsing
+
+```kotlin
+val score = GregorianScoreParser.parse(gabc)
+for (element in score.elements) {
+    if (element is GregorianNotationElement.Neume) {
+        val neume = element.neume
+        println("${neume.lyric} ${neume.form} ${neume.notes.map { it.pitch }}")
+    }
+}
+println(score.lyricText) // Deus in adjutórium meum inténde.
+```
+
+The model is the Swift one. A compiled timeline is a `GregorianTimeline` of
+`GregorianTimelineEvent`s (`id`, `syllableId`, `relativePitch`), passed to
+`GregorianScoreParser.parse(gabc, timeline)`.
+
 ## GABC coverage
+
+Both languages read the same notation, and fail on the same tokens.
 
 - The header up to `%%` is skipped; text without `%%` is read as notation.
   `%` comments are dropped.
 - Clefs `c1`–`c4`, `f1`–`f4` and `cb1`–`cb4`; pitches `a`–`m`.
-- Punctum, virga (`v`), punctum inclinatum (a capital letter), quilisma
-  (`w`), oriscus (`o`), stropha (`s`), cavum (`r`, `r0`), liquescents (`~`,
-  `<`, `>`), a written custos (`f+`), and repeated virgae and strophae
-  (`hvv`, `hsss`).
+- Punctum, virga (`v`), punctum inclinatum (a capital letter, liquescent with
+  `~`, `<` or `>`), quilisma (`w`), oriscus (`o`), stropha (`s`), cavum (`r`,
+  `r0`), liquescents (`~`, `<`, `>`), a written custos (`f+`), and repeated
+  virgae and strophae (`hvv`, `hsss`).
 - Mora (`.`, `..`), horizontal episema (`_`; below the note with `_0`),
   vertical episema (`'`), and accidentals (`ix`, `iy`, `i#`).
 - Divisions `,` `` ` `` `;` `:` `::`, the line break `z`, and the neume
   separators `/` and `!`.
 - In lyrics, tags and braces are dropped; psalm-tone pointing marks
   preparatory (`_cu_`, italic) and accented (`*Ja*`, bold) syllables; `V/.`
-  and `R/.` become ℣. and ℟.
+  and `R/.` written alone become ℣. and ℟.
 
 Neumes are grouped and named as Exsurge groups them: podatus, clivis,
-torculus, porrectus, scandicus, climacus, salicus, pes subpunctis and the
-rest. `[…]` annotations and the signs this engraver does not draw (`@`, `-`,
-`q`, `r1`–`r5`, digits) are skipped. Anything else in a notation group fails
-the parse with `GregorianScoreParserError.unsupportedToken` and its offset.
+torculus, porrectus, scandicus, climacus, ancus, salicus, pes subpunctis and
+the rest. `[…]` annotations and the signs this engraver does not draw (`@`,
+`-`, `q`, `r1`–`r5`, digits) are skipped. Anything else in a notation group
+fails the parse with an unsupported-token error and its offset.
 
 ## Development
 
@@ -282,7 +314,8 @@ cd kotlin && ./gradlew connectedAndroidTest   # the font and the views, on a dev
 ```
 
 The Kotlin tests read the Swift tests' fixtures and measure lyrics in the
-font `GABCLyricFont` carries.
+font `GABCLyricFont` carries. A change to either language is made in the
+other as well, with its tests.
 
 The glyph catalog is generated from Exsurge's SVG glyph outlines, for Swift
 and Kotlin alike; to regenerate both, check Exsurge out at the revision named
