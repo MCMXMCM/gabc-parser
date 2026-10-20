@@ -48,7 +48,7 @@ Add the package in Xcode (File ▸ Add Package Dependencies…, with
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.3.0")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.3.1")
 ],
 targets: [
     .target(
@@ -211,7 +211,7 @@ and in the app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.3.0")
+    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.3.1")
 }
 ```
 
