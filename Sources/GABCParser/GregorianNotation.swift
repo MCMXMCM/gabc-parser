@@ -129,10 +129,18 @@ public struct GregorianNote: Codable, Hashable, Sendable, Identifiable {
     public let hasMora: Bool
     public let hasEpisema: Bool
     public let moraCount: Int
-    public let episemaPosition: GregorianEpisemaPosition
+    /// The side of the note the GABC sets its dot on (`.1` above, `.0`
+    /// below); nil where it leaves the side to the engraver.
+    public let moraPosition: GregorianEpisemaPosition?
+    /// The side the GABC sets the horizontal episema on (`_1`, `_0`); nil
+    /// where it leaves the side to the engraver.
+    public let episemaPosition: GregorianEpisemaPosition?
     public let liquescence: GregorianLiquescence
     public let isCavum: Bool
     public let hasIctus: Bool
+    /// The side the GABC sets the ictus on (`'1`, `'0`); nil where it
+    /// leaves the side to the engraver.
+    public let ictusPosition: GregorianEpisemaPosition?
     /// How many notes the one pitch letter writes. GABC abbreviates two
     /// virgae or three strophae on a pitch as `hvv` and `hsss`; the compiled
     /// timeline holds a single event for the group, which is drawn and sung
@@ -159,10 +167,12 @@ public struct GregorianNote: Codable, Hashable, Sendable, Identifiable {
         hasMora: Bool,
         hasEpisema: Bool,
         moraCount: Int = 0,
-        episemaPosition: GregorianEpisemaPosition = .above,
+        moraPosition: GregorianEpisemaPosition? = nil,
+        episemaPosition: GregorianEpisemaPosition? = nil,
         liquescence: GregorianLiquescence = .none,
         isCavum: Bool = false,
         hasIctus: Bool = false,
+        ictusPosition: GregorianEpisemaPosition? = nil,
         repetitionCount: Int = 1,
         sourceRange: GregorianSourceRange
     ) {
@@ -174,10 +184,12 @@ public struct GregorianNote: Codable, Hashable, Sendable, Identifiable {
         self.hasMora = hasMora
         self.hasEpisema = hasEpisema
         self.moraCount = max(moraCount, hasMora ? 1 : 0)
+        self.moraPosition = moraPosition
         self.episemaPosition = episemaPosition
         self.liquescence = liquescence
         self.isCavum = isCavum
         self.hasIctus = hasIctus
+        self.ictusPosition = ictusPosition
         self.repetitionCount = max(1, repetitionCount)
         self.sourceRange = sourceRange
     }
@@ -594,10 +606,12 @@ public enum GregorianScoreParser {
                                 hasMora: note.hasMora,
                                 hasEpisema: note.hasEpisema,
                                 moraCount: note.moraCount,
+                                moraPosition: note.moraPosition,
                                 episemaPosition: note.episemaPosition,
                                 liquescence: note.liquescence,
                                 isCavum: note.isCavum,
                                 hasIctus: note.hasIctus,
+                                ictusPosition: note.ictusPosition,
                                 repetitionCount: note.repetitionCount,
                                 sourceRange: note.sourceRange
                             )
@@ -615,6 +629,14 @@ public enum GregorianScoreParser {
                     let segments = GregorianNeumeSegmenter.segment(mappedNotes)
                     for (segmentIndex, segment) in segments.enumerated() {
                         guard let segmentFirst = segment.first else { continue }
+                        // A punctum that begins a pressus abuts the neume it
+                        // repeats the first note of (`hhg`, `ffg`).
+                        let joinsPressus = segmentIndex > 0 && segment.count > 1
+                            && segments[segmentIndex - 1].count == 1
+                            && segments[segmentIndex - 1].last.map { previous in
+                                previous.pitch == segmentFirst.pitch && previous.shape == .punctum
+                                    && previous.liquescence == .none && previous.moraCount == 0
+                            } == true
                         elements.append(
                             .neume(
                                 GregorianNeume(
@@ -633,7 +655,9 @@ public enum GregorianScoreParser {
                                     centeredRange: segmentIndex == 0 && !neumeLyric.isEmpty
                                         ? sung.centeredRange
                                         : nil,
-                                    spaceBefore: segmentIndex == 0 ? spaceBefore : .automatic
+                                    spaceBefore: segmentIndex == 0
+                                        ? spaceBefore
+                                        : (joinsPressus ? .joined : .automatic)
                                 )
                             )
                         )
@@ -691,12 +715,17 @@ public enum GregorianScoreParser {
         let shape: GregorianNoteShape
         let accidental: GregorianAccidental?
         let hasMora: Bool
-        let hasEpisema: Bool
+        var hasEpisema: Bool
         let moraCount: Int
-        let episemaPosition: GregorianEpisemaPosition
+        let moraPosition: GregorianEpisemaPosition?
+        var episemaPosition: GregorianEpisemaPosition?
+        /// The notes its episema covers, counting back from this one: as
+        /// many as the GABC writes underscores (`kj__`).
+        let episemaReach: Int
         let liquescence: GregorianLiquescence
         let isCavum: Bool
         let hasIctus: Bool
+        let ictusPosition: GregorianEpisemaPosition?
         let repetitionCount: Int
         let sourceRange: GregorianSourceRange
     }
@@ -944,13 +973,16 @@ public enum GregorianScoreParser {
                     hasMora: suffix.contains("."),
                     hasEpisema: suffix.contains("_"),
                     moraCount: suffix.filter { $0 == "." }.count,
-                    episemaPosition: suffix.contains("_0") ? .below : .above,
+                    moraPosition: signPosition(".", in: suffix),
+                    episemaPosition: signPosition("_", in: suffix),
+                    episemaReach: suffix.filter { $0 == "_" }.count,
                     liquescence: liquescence,
                     // r0 is a hollow note within lines; r1 to r5 are signs
                     // written above the note (an accent, a circle), not a
                     // hollow note.
                     isCavum: isCavum(suffix),
                     hasIctus: suffix.contains("'"),
+                    ictusPosition: signPosition("'", in: suffix),
                     repetitionCount: isCustos ? 1 : repeatedNoteCount(suffix),
                     sourceRange: GregorianSourceRange(
                         lowerBound: baseOffset + noteStart,
@@ -965,7 +997,37 @@ public enum GregorianScoreParser {
         }
 
         flushNotes()
+
+        // An episema written with more than one underscore (`kj__`) reaches
+        // back over as many notes of the group.
+        let places = result.indices.flatMap { tokenIndex -> [(token: Int, note: Int)] in
+            guard case let .notes(notes, _) = result[tokenIndex] else { return [] }
+            return notes.indices.map { (tokenIndex, $0) }
+        }
+        for (order, place) in places.enumerated() {
+            guard case let .notes(notes, _) = result[place.token] else { continue }
+            let note = notes[place.note]
+            for back in stride(from: 1, to: note.episemaReach, by: 1) where order >= back {
+                let earlier = places[order - back]
+                guard case .notes(var earlierNotes, let space) = result[earlier.token] else { continue }
+                earlierNotes[earlier.note].hasEpisema = true
+                if earlierNotes[earlier.note].episemaPosition == nil {
+                    earlierNotes[earlier.note].episemaPosition = note.episemaPosition
+                }
+                result[earlier.token] = .notes(earlierNotes, spaceBefore: space)
+            }
+        }
         return result
+    }
+
+    /// The side a sign's digit sets it on: `1` above, `0` below.
+    private static func signPosition(_ sign: Character, in suffix: String) -> GregorianEpisemaPosition? {
+        let characters = Array(suffix)
+        for index in characters.indices.dropLast() where characters[index] == sign {
+            if characters[index + 1] == "1" { return .above }
+            if characters[index + 1] == "0" { return .below }
+        }
+        return nil
     }
 
     /// GABC's quick virga and stropha: each repeated sign is another note
@@ -1198,6 +1260,13 @@ public enum GregorianNeumeClassifier {
             return directions[0] < 0 ? .clivis : .punctum
         }
 
+        // A pes and the diamonds that fall from it.
+        if directions.first == 1, notes.count >= 3,
+           notes.dropFirst(2).allSatisfy({ $0.shape == .inclinatum }),
+           directions.dropFirst().allSatisfy({ $0 < 0 }) {
+            return .pesSubpunctis
+        }
+
         let firstTwo = Array(directions.prefix(2))
         if firstTwo == [1, 1] {
             if notes.dropFirst().contains(where: { $0.shape == .oriscus }) {
@@ -1215,9 +1284,6 @@ public enum GregorianNeumeClassifier {
         }
         if firstTwo == [-1, 1] {
             return directions.dropFirst(2).first == -1 ? .porrectusFlexus : .porrectus
-        }
-        if directions.first == 1, directions.dropFirst().allSatisfy({ $0 < 0 }) {
-            return .pesSubpunctis
         }
         return .punctum
     }
@@ -1345,7 +1411,7 @@ public enum GregorianNeumeSegmenter {
                     length = 2
                 }
             } else {
-                length = min(3, repeatedPitchCount(notes, from: index, pitch: first.pitch))
+                length = unisonLength(notes, from: index)
             }
 
             result.append(Array(notes[index..<(index + length)]))
@@ -1370,15 +1436,26 @@ public enum GregorianNeumeSegmenter {
         return max(1, count)
     }
 
-    private static func repeatedPitchCount(
-        _ notes: [GregorianNote],
-        from index: Int,
-        pitch: Int
-    ) -> Int {
-        var count = 0
-        while index + count < notes.count, notes[index + count].pitch == pitch {
-            count += 1
+    /// How many plain notes repeated on one pitch make a neume, as Exsurge
+    /// groups them: two a distropha and three a tristropha only where the
+    /// run ends with them. Where the melody goes on, the last of them begins
+    /// the next neume, a pressus (`ffg` is a punctum and a pes), and a dotted
+    /// or diminished note stands alone.
+    private static func unisonLength(_ notes: [GregorianNote], from index: Int) -> Int {
+        let first = notes[index]
+        guard index + 1 < notes.count, notes[index + 1].pitch == first.pitch,
+              isPlain(notes[index + 1]), first.moraCount == 0, first.liquescence != .small else {
+            return 1
         }
-        return max(1, count)
+        let second = notes[index + 1]
+        guard index + 2 < notes.count else { return 2 }
+        guard notes[index + 2].pitch == first.pitch else { return 1 }
+        if second.moraCount > 0 { return 2 }
+        return index + 3 < notes.count ? 2 : 3
+    }
+
+    /// A note of no shape of its own: a punctum, liquescent or not.
+    private static func isPlain(_ note: GregorianNote) -> Bool {
+        note.shape == .punctum || note.shape == .liquescent
     }
 }

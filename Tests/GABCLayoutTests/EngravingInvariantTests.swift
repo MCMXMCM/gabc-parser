@@ -46,8 +46,8 @@ final class EngravingInvariantTests: XCTestCase {
             GregorianEngravingLayoutEngine().layout(score: score, width: 390)
                 .glyphs.map(\.kind.catalogName)
         )
-        XCTAssertTrue(names.contains(.podatusLower))
-        XCTAssertTrue(names.contains(.podatusUpper))
+        XCTAssertTrue(names.contains(.podatusLowerShort))
+        XCTAssertTrue(names.contains(.podatusUpperShort))
 
         let boundary = try GregorianScoreParser.parse(gabc: "name: boundary; %% (c4) Ky(fg!hi) (::)")
         XCTAssertEqual(boundary.neumes.map(\.form), [.podatus, .podatus])
@@ -63,7 +63,13 @@ final class EngravingInvariantTests: XCTestCase {
         XCTAssertEqual(writtenLayout.events.map(\.eventID), written.eventIDs)
         XCTAssertEqual(writtenLayout.glyphs.filter { $0.kind == .custos }.count, 1)
         XCTAssertEqual(writtenLayout.neumes.map(\.noteCount), [1, 2, 3, 1])
-        XCTAssertEqual(writtenLayout.glyphs.filter { $0.kind == .catalog(.virgaShort) }.count, 2)
+        // A bivirga is two heads, each with its stem.
+        let bivirga = written.eventIDs[2]
+        XCTAssertEqual(
+            writtenLayout.glyphs.filter { $0.kind == .catalog(.punctumQuadratum) && $0.eventID == bivirga }.count,
+            2
+        )
+        XCTAssertEqual(writtenLayout.strokes.filter { $0.kind == .connector && $0.eventID == bivirga }.count, 2)
         XCTAssertEqual(writtenLayout.glyphs.filter { $0.kind == .catalog(.stropha) }.count, 3)
     }
 

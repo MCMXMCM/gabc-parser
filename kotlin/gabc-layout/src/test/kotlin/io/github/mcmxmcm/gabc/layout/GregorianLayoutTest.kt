@@ -126,8 +126,9 @@ class GregorianLayoutTest {
         val layout = GregorianEngravingLayoutEngine().layout(score, width = 390f)
         val names = layout.glyphs.map { it.kind.catalogName }
 
-        assertTrue(names.contains(GregorianGlyphName.PodatusLower))
-        assertTrue(names.contains(GregorianGlyphName.PodatusUpper))
+        // A pes of a second takes Exsurge's short halves.
+        assertTrue(names.contains(GregorianGlyphName.PodatusLowerShort))
+        assertTrue(names.contains(GregorianGlyphName.PodatusUpperShort))
         assertTrue(names.contains(GregorianGlyphName.Porrectus1))
     }
 
@@ -957,17 +958,21 @@ class GregorianLayoutTest {
             GregorianEventTimeline(events),
         )
         val layout = GregorianEngravingLayoutEngine().layout(score, width = 390f)
-        // Repeated notes stand apart, as Exsurge sets them: a quarter staff space after a virga, an eighth after a
-        // stropha.
+        // Repeated notes stand apart, as Exsurge sets them: a virga's head a quarter staff space after the last one's
+        // stem, which stands inside its head; a stropha an eighth of one after the last.
         val staffSpace = 200 * (1f / 16)
-        val gaps = mapOf(GregorianGlyphName.VirgaShort to 0.25f * staffSpace, GregorianGlyphName.Stropha to 0.125f * staffSpace)
+        val stemWidth = 18f / 16
+        val gaps = mapOf(
+            GregorianGlyphName.PunctumQuadratum to 0.25f * staffSpace - stemWidth,
+            GregorianGlyphName.Stropha to 0.125f * staffSpace,
+        )
 
         assertEquals(score.eventIds, layout.events.map { it.eventId })
         assertEquals(listOf(1, 1, 1, 1), layout.neumes.map { it.eventIds.size })
         assertEquals(listOf(2, 3, 2, 1), layout.neumes.map { it.noteCount })
 
         val expected: List<Pair<GregorianGlyphName, Int>> = listOf(
-            GregorianGlyphName.VirgaShort to 2,
+            GregorianGlyphName.PunctumQuadratum to 2,
             GregorianGlyphName.Stropha to 3,
             GregorianGlyphName.Stropha to 2,
             GregorianGlyphName.PunctumQuadratum to 1,
@@ -983,6 +988,15 @@ class GregorianLayoutTest {
                 assertEquals(gaps[name] ?: 0f, next.frame.left - previous.frame.right, 0.001f)
                 assertEquals(previous.frame.top, next.frame.top, 0.001f)
                 assertEquals(previous.frame.size, next.frame.size)
+            }
+            // Each head of a virga has its stem, inside its right edge.
+            if (index == 0) {
+                val stems = layout.strokes.filter { it.eventId == eventId && it.kind == GregorianStrokeKind.Connector }
+                assertEquals(2, stems.size)
+                for ((head, stem) in notes.zip(stems.sortedBy { it.start.x })) {
+                    assertEquals(head.frame.right - stemWidth / 2, stem.start.x, 0.001f)
+                    assertGreaterThan(stem.end.y, head.frame.bottom)
+                }
             }
             // The event answers to all of them together.
             val placement = unwrap(layout.events.firstOrNull { it.eventId == eventId })
@@ -1030,10 +1044,10 @@ class GregorianLayoutTest {
         )
         val engine = GregorianEngravingLayoutEngine()
         val writtenOutVirgae = engine.layout(writtenOut, width = 390f).glyphs
-            .filter { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.VirgaShort) }
+            .filter { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.PunctumQuadratum) && it.eventId in setOf("event-0", "event-1") }
             .map { it.frame }
         val abbreviatedVirgae = engine.layout(abbreviated, width = 390f).glyphs
-            .filter { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.VirgaShort) }
+            .filter { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.PunctumQuadratum) && it.eventId == "event-0" }
             .map { it.frame }
         assertEquals(2, writtenOutVirgae.size)
         assertEquals(2, abbreviatedVirgae.size)

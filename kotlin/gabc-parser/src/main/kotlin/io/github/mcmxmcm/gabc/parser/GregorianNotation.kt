@@ -89,10 +89,15 @@ public data class GregorianNote(
     val hasMora: Boolean,
     val hasEpisema: Boolean,
     val moraCount: Int = if (hasMora) 1 else 0,
-    val episemaPosition: GregorianEpisemaPosition = GregorianEpisemaPosition.Above,
+    /** The side of the note the GABC sets its dot on (`.1` above, `.0` below); null where it leaves the side to the engraver. */
+    val moraPosition: GregorianEpisemaPosition? = null,
+    /** The side the GABC sets the horizontal episema on (`_1`, `_0`); null where it leaves the side to the engraver. */
+    val episemaPosition: GregorianEpisemaPosition? = null,
     val liquescence: GregorianLiquescence = GregorianLiquescence.None,
     val isCavum: Boolean = false,
     val hasIctus: Boolean = false,
+    /** The side the GABC sets the ictus on (`'1`, `'0`); null where it leaves the side to the engraver. */
+    val ictusPosition: GregorianEpisemaPosition? = null,
     /**
      * How many notes the one pitch letter writes. GABC abbreviates two virgae or three strophae on a pitch as
      * `hvv` and `hsss`; the compiled timeline holds a single event for the group, which is drawn and sung as that
@@ -399,10 +404,12 @@ public object GregorianScoreParser {
                                 hasMora = note.hasMora,
                                 hasEpisema = note.hasEpisema,
                                 moraCount = note.moraCount,
+                                moraPosition = note.moraPosition,
                                 episemaPosition = note.episemaPosition,
                                 liquescence = note.liquescence,
                                 isCavum = note.isCavum,
                                 hasIctus = note.hasIctus,
+                                ictusPosition = note.ictusPosition,
                                 repetitionCount = note.repetitionCount,
                                 sourceRange = note.sourceRange,
                             )
@@ -420,6 +427,13 @@ public object GregorianScoreParser {
                         val segments = GregorianNeumeSegmenter.segment(mappedNotes)
                         for ((segmentIndex, segment) in segments.withIndex()) {
                             val segmentFirst = segment.firstOrNull() ?: continue
+                            // A punctum that begins a pressus abuts the neume it repeats the first note of (`hhg`, `ffg`).
+                            val previousSegment = segments.getOrNull(segmentIndex - 1)
+                            val joinsPressus = segment.size > 1 && previousSegment?.size == 1 &&
+                                previousSegment.last().let { previous ->
+                                    previous.pitch == segmentFirst.pitch && previous.shape == GregorianNoteShape.Punctum &&
+                                        previous.liquescence == GregorianLiquescence.None && previous.moraCount == 0
+                                }
                             elements += GregorianNotationElement.Neume(
                                 GregorianNeume(
                                     id = segmentFirst.id,
@@ -433,7 +447,11 @@ public object GregorianScoreParser {
                                         segment.last().sourceRange.upperBound,
                                     ),
                                     centeredRange = if (segmentIndex == 0 && neumeLyric.isNotEmpty()) sung.centeredRange else null,
-                                    spaceBefore = if (segmentIndex == 0) token.spaceBefore else GregorianNeumeSpace.Automatic,
+                                    spaceBefore = when {
+                                        segmentIndex == 0 -> token.spaceBefore
+                                        joinsPressus -> GregorianNeumeSpace.Joined
+                                        else -> GregorianNeumeSpace.Automatic
+                                    },
                                 ),
                             )
                         }
@@ -480,12 +498,16 @@ public object GregorianScoreParser {
         val shape: GregorianNoteShape,
         val accidental: GregorianAccidental?,
         val hasMora: Boolean,
-        val hasEpisema: Boolean,
+        var hasEpisema: Boolean,
         val moraCount: Int,
-        val episemaPosition: GregorianEpisemaPosition,
+        val moraPosition: GregorianEpisemaPosition?,
+        var episemaPosition: GregorianEpisemaPosition?,
+        /** The notes its episema covers, counting back from this one: as many as the GABC writes underscores (`kj__`). */
+        val episemaReach: Int,
         val liquescence: GregorianLiquescence,
         val isCavum: Boolean,
         val hasIctus: Boolean,
+        val ictusPosition: GregorianEpisemaPosition?,
         val repetitionCount: Int,
         val sourceRange: GregorianSourceRange,
     )
@@ -678,12 +700,15 @@ public object GregorianScoreParser {
                 hasMora = '.' in suffix,
                 hasEpisema = '_' in suffix,
                 moraCount = suffix.count { it == '.' },
-                episemaPosition = if ("_0" in suffix) GregorianEpisemaPosition.Below else GregorianEpisemaPosition.Above,
+                moraPosition = signPosition('.', suffix),
+                episemaPosition = signPosition('_', suffix),
+                episemaReach = suffix.count { it == '_' },
                 liquescence = liquescence,
                 // r0 is a hollow note within lines; r1 to r5 are signs written above the note (an accent, a
                 // circle), not a hollow note.
                 isCavum = isCavum(suffix),
                 hasIctus = '\'' in suffix,
+                ictusPosition = signPosition('\'', suffix),
                 repetitionCount = if (isCustos) 1 else repeatedNoteCount(suffix),
                 sourceRange = GregorianSourceRange(at(noteStart), at(index)),
             )
@@ -694,7 +719,27 @@ public object GregorianScoreParser {
         }
 
         flushNotes()
+
+        // An episema written with more than one underscore (`kj__`) reaches back over as many notes of the group.
+        val groupNotes = result.flatMap { (it as? ParsedToken.Notes)?.notes ?: emptyList() }
+        for ((order, note) in groupNotes.withIndex()) {
+            for (back in 1 until note.episemaReach) {
+                val earlier = groupNotes.getOrNull(order - back) ?: break
+                earlier.hasEpisema = true
+                if (earlier.episemaPosition == null) earlier.episemaPosition = note.episemaPosition
+            }
+        }
         return result
+    }
+
+    /** The side a sign's digit sets it on: `1` above, `0` below. */
+    private fun signPosition(sign: Char, suffix: String): GregorianEpisemaPosition? {
+        for (index in 0 until suffix.length - 1) {
+            if (suffix[index] != sign) continue
+            if (suffix[index + 1] == '1') return GregorianEpisemaPosition.Above
+            if (suffix[index + 1] == '0') return GregorianEpisemaPosition.Below
+        }
+        return null
     }
 
     /** GABC's quick virga and stropha: each repeated sign is another note on the same pitch (`hvv` is two virgae, `hsss` three strophae). */
@@ -899,6 +944,13 @@ public object GregorianNeumeClassifier {
             return if (directions[0] < 0) GregorianNeumeForm.Clivis else GregorianNeumeForm.Punctum
         }
 
+        // A pes and the diamonds that fall from it.
+        if (directions.first() == 1 && notes.size >= 3 && notes.drop(2).all { it.shape == GregorianNoteShape.Inclinatum } &&
+            directions.drop(1).all { it < 0 }
+        ) {
+            return GregorianNeumeForm.PesSubpunctis
+        }
+
         val firstTwo = directions.take(2)
         val rest = directions.drop(2)
         if (firstTwo == listOf(1, 1)) {
@@ -920,7 +972,6 @@ public object GregorianNeumeClassifier {
         if (firstTwo == listOf(-1, 1)) {
             return if (rest.firstOrNull() == -1) GregorianNeumeForm.PorrectusFlexus else GregorianNeumeForm.Porrectus
         }
-        if (directions.first() == 1 && directions.drop(1).all { it < 0 }) return GregorianNeumeForm.PesSubpunctis
         return GregorianNeumeForm.Punctum
     }
 }
@@ -1027,7 +1078,7 @@ public object GregorianNeumeSegmenter {
                     length = 2
                 }
             } else {
-                length = minOf(3, repeatedPitchCount(notes, index, first.pitch))
+                length = unisonLength(notes, index)
             }
             result += notes.subList(index, index + length)
             index += length
@@ -1045,9 +1096,26 @@ public object GregorianNeumeSegmenter {
         return maxOf(1, count)
     }
 
-    private fun repeatedPitchCount(notes: List<GregorianNote>, index: Int, pitch: Int): Int {
-        var count = 0
-        while (index + count < notes.size && notes[index + count].pitch == pitch) count += 1
-        return maxOf(1, count)
+    /**
+     * How many plain notes repeated on one pitch make a neume, as Exsurge groups them: two a distropha and three a
+     * tristropha only where the run ends with them. Where the melody goes on, the last of them begins the next neume,
+     * a pressus (`ffg` is a punctum and a pes), and a dotted or diminished note stands alone.
+     */
+    private fun unisonLength(notes: List<GregorianNote>, index: Int): Int {
+        val first = notes[index]
+        val second = notes.getOrNull(index + 1)
+        if (second == null || second.pitch != first.pitch || !isPlain(second) || first.moraCount > 0 ||
+            first.liquescence == GregorianLiquescence.Small
+        ) {
+            return 1
+        }
+        val third = notes.getOrNull(index + 2) ?: return 2
+        if (third.pitch != first.pitch) return 1
+        if (second.moraCount > 0) return 2
+        return if (index + 3 < notes.size) 2 else 3
     }
+
+    /** A note of no shape of its own: a punctum, liquescent or not. */
+    private fun isPlain(note: GregorianNote): Boolean =
+        note.shape == GregorianNoteShape.Punctum || note.shape == GregorianNoteShape.Liquescent
 }

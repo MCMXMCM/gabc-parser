@@ -104,10 +104,10 @@ final class GregorianScoreParserTests: XCTestCase {
 
         let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390)
         XCTAssertTrue(
-            layout.glyphs.contains { $0.kind == .catalog(.podatusLower) }
+            layout.glyphs.contains { $0.kind == .catalog(.podatusLowerShort) }
         )
         XCTAssertTrue(
-            layout.glyphs.contains { $0.kind == .catalog(.podatusUpper) }
+            layout.glyphs.contains { $0.kind == .catalog(.podatusUpperShort) }
         )
         XCTAssertFalse(
             layout.glyphs.contains {

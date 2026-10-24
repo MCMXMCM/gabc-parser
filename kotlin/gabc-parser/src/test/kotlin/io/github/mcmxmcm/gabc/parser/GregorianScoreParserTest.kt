@@ -121,10 +121,10 @@ class GregorianScoreParserTest {
 
         val layout = GregorianEngravingLayoutEngine().layout(score, width = 390f)
         assertTrue(
-            layout.glyphs.any { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.PodatusLower) },
+            layout.glyphs.any { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.PodatusLowerShort) },
         )
         assertTrue(
-            layout.glyphs.any { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.PodatusUpper) },
+            layout.glyphs.any { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.PodatusUpperShort) },
         )
         assertFalse(
             layout.glyphs.any {

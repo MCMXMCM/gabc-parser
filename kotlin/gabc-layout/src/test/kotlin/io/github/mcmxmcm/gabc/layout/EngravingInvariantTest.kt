@@ -34,8 +34,8 @@ class EngravingInvariantTest {
         )
         val names = GregorianEngravingLayoutEngine().layout(score, width = 390f)
             .glyphs.map { it.kind.catalogName }.toSet()
-        assertTrue(GregorianGlyphName.PodatusLower in names)
-        assertTrue(GregorianGlyphName.PodatusUpper in names)
+        assertTrue(GregorianGlyphName.PodatusLowerShort in names)
+        assertTrue(GregorianGlyphName.PodatusUpperShort in names)
 
         val boundary = GregorianScoreParser.parse("name: boundary; %% (c4) Ky(fg!hi) (::)")
         assertEquals(listOf(GregorianNeumeForm.Podatus, GregorianNeumeForm.Podatus), boundary.neumes.map { it.form })
@@ -60,10 +60,13 @@ class EngravingInvariantTest {
         assertEquals(written.eventIds, writtenLayout.events.map { it.eventId })
         assertEquals(1, writtenLayout.glyphs.filter { it.kind == GregorianGlyphKind.Custos }.size)
         assertEquals(listOf(1, 2, 3, 1), writtenLayout.neumes.map { it.noteCount })
+        // A bivirga is two heads, each with its stem.
+        val bivirga = written.eventIds[2]
         assertEquals(
             2,
-            writtenLayout.glyphs.filter { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.VirgaShort) }.size,
+            writtenLayout.glyphs.count { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.PunctumQuadratum) && it.eventId == bivirga },
         )
+        assertEquals(2, writtenLayout.strokes.count { it.kind == GregorianStrokeKind.Connector && it.eventId == bivirga })
         assertEquals(
             3,
             writtenLayout.glyphs.filter { it.kind == GregorianGlyphKind.Catalog(GregorianGlyphName.Stropha) }.size,

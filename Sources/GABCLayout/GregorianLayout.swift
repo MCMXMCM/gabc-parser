@@ -575,6 +575,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 case let .neume(neume):
                     let composition = compose(
                         neume: neume,
+                        context: unit.context,
                         originX: x - punctumWidth / 2,
                         staffCenter: staffCenter,
                         staffTop: staffTop,
@@ -697,6 +698,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let lyricFocus: CGFloat
         let join: LyricJoin
         let forcesBreak: Bool
+        /// The notes beside a neume that its engraving needs.
+        var context = NeumeContext()
 
         var neume: GregorianNeume? {
             guard case let .neume(neume) = element else { return nil }
@@ -933,7 +936,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             lyricWidth: CGFloat = 0,
             lyricFocus: CGFloat = 0,
             join: LyricJoin = .word,
-            forcesBreak: Bool = false
+            forcesBreak: Bool = false,
+            context: NeumeContext = NeumeContext()
         ) -> LayoutUnit {
             LayoutUnit(
                 element: element,
@@ -943,11 +947,29 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 lyricWidth: lyricWidth,
                 lyricFocus: lyricFocus,
                 join: join,
-                forcesBreak: forcesBreak
+                forcesBreak: forcesBreak,
+                context: context
             )
         }
 
-        return score.elements.map { element in
+        // Each neume's context: the last note of the neume of its syllable
+        // that it follows with no space (`!`), and the next neume's first
+        // note.
+        let elements = score.elements
+        var contexts = [NeumeContext](repeating: NeumeContext(), count: elements.count)
+        var nextNote: GregorianNote?
+        for index in elements.indices.reversed() {
+            guard case let .neume(neume) = elements[index] else { continue }
+            contexts[index].next = nextNote
+            if let first = neume.notes.first, !first.isCustos { nextNote = first }
+            if neume.spaceBefore == .joined, index > 0,
+               case let .neume(previous) = elements[index - 1],
+               previous.syllableID == neume.syllableID {
+                contexts[index].joinedFrom = previous.notes.last
+            }
+        }
+
+        return elements.enumerated().map { elementIndex, element in
             switch element {
             case .clef:
                 return unit(element, inkRight: 24 * notationScale)
@@ -1006,7 +1028,13 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 if !lyricText.isEmpty {
                     previousLyric = (lyricText, neume.syllableID)
                 }
-                let ink = notationInk(neume, glyphScale: glyphScale, notationScale: notationScale)
+                let context = contexts[elementIndex]
+                let ink = notationInk(
+                    neume,
+                    context: context,
+                    glyphScale: glyphScale,
+                    notationScale: notationScale
+                )
                 return unit(
                     element,
                     // A neume is placed by its first note's centre, under
@@ -1016,7 +1044,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     lyricText: lyricText,
                     lyricWidth: lyric.width,
                     lyricFocus: lyric.focus,
-                    join: join
+                    join: join,
+                    context: context
                 )
             }
         }
@@ -1044,6 +1073,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
     /// dots, episemata and ledger lines.
     private func notationInk(
         _ neume: GregorianNeume,
+        context: NeumeContext,
         glyphScale: CGFloat,
         notationScale: CGFloat
     ) -> (left: CGFloat, right: CGFloat) {
@@ -1051,6 +1081,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let staffGap = staffStep * 2
         let composition = compose(
             neume: neume,
+            context: context,
             originX: 0,
             staffCenter: staffGap * 1.5,
             staffTop: 0,
@@ -1627,8 +1658,25 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         return lines.isEmpty ? [paragraph] : lines
     }
 
+    /// What a neume's builder needs of the notes beside it: the last note of
+    /// the neume the GABC joins it to (`!`), from which its first stem may
+    /// hang, and the first note of the next neume, by which a lone oriscus
+    /// turns.
+    private struct NeumeContext {
+        var joinedFrom: GregorianNote?
+        var next: GregorianNote?
+    }
+
+    /// Engraves a neume as Exsurge builds one, note by note from the left.
+    /// Each note is set where the last ended, joined to it by a stem where
+    /// the two stand more than a step apart. A clivis and a porrectus hang
+    /// from a stem on their left; a virga's stem stands inside its head's
+    /// right edge; a pes sets its upper note over the lower, joined on the
+    /// right; a porrectus sets its last note over the end of its oblique;
+    /// and the diamonds of a climacus step down from one another unjoined.
     private func compose(
         neume: GregorianNeume,
+        context: NeumeContext = NeumeContext(),
         originX: CGFloat,
         staffCenter: CGFloat,
         staffTop: CGFloat,
@@ -1639,83 +1687,398 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         lineIndex: Int
     ) -> Composition {
         var result = Composition()
+        let notes = neume.notes
         let punctumWidth = 100 * glyphScale
-        var noteOrigins: [CGFloat] = []
-        // The gap between notes repeated on one pitch, as Exsurge sets it: a
-        // quarter staff space after a virga, an eighth after a stropha.
-        func repeatGap(_ note: GregorianNote) -> CGFloat {
-            (note.shape == .stropha ? 0.125 : 0.25) * staffStep * 2
+        // Exsurge's space between the parts of a neume: a quarter staff space.
+        let intraNeumeSpacing = staffStep / 2
+        // The weight of the stems that bind a neume's notes.
+        let stemWidth = max(1, 18 * glyphScale)
+
+        func noteY(_ pitch: Int) -> CGFloat {
+            staffCenter - CGFloat(pitch - 6) * staffStep
         }
-        func glyphWidth(_ name: GregorianGlyphName) -> CGFloat {
+        func width(_ name: GregorianGlyphName) -> CGFloat {
             GregorianGlyphCatalog.definition(for: name).bounds.width * glyphScale
         }
-        let stropharum: Set<GregorianNeumeForm> = [.apostropha, .distropha, .tristropha]
 
-        switch neume.form {
-        case .podatus where neume.notes.count >= 2,
-             .pesQuassus where neume.notes.count >= 2:
-            noteOrigins = Array(repeating: originX, count: neume.notes.count)
-            if neume.notes.count > 2 {
-                for index in 2..<neume.notes.count {
-                    noteOrigins[index] = originX + punctumWidth * CGFloat(index - 1)
-                }
+        // Each note's glyph, the left of its first head, and the advance
+        // from one head to the next of a note written twice or thrice.
+        var glyphs = notes.map { _ in GregorianGlyphName.punctumQuadratum }
+        var lefts = notes.map { _ in originX }
+        var advances = notes.map { _ in CGFloat(0) }
+        // The notes drawn with a virga's stem.
+        var virgae = Set<Int>()
+
+        // The builder's place, and the note the next may be joined to.
+        var x = originX
+        var last: (pitch: Int, alignsRight: Bool)?
+        var lineIsHanging = false
+        var minX = originX
+
+        /// Exsurge's neume line: from the upper note's centre to the lower's,
+        /// and on past the lower for a stem that hangs, a clivis's or a
+        /// porrectus's.
+        func stem(at stemX: CGFloat, from pitchA: Int, to pitchB: Int, hanging: Bool, eventID: String) {
+            let upper = max(pitchA, pitchB) - 6
+            var lower = min(pitchA, pitchB) - 6
+            var overhang: CGFloat = 0
+            if hanging {
+                if upper - lower > 4 { lower = upper - 4 }
+                // From a note on a line a step above the next, within the
+                // staff, the stem reaches a step further.
+                if upper - lower == 1, abs(upper) % 2 == 1, lower > -3 { lower -= 1 }
+                overhang = GregorianGlyphCatalog.definition(for: .punctumQuadratum).bounds.height
+                    * glyphScale / 2.2
             }
-        case .climacus, .ancus, .punctaInclinata:
+            result.strokes.append(
+                GregorianPlacedStroke(
+                    kind: .connector,
+                    start: CGPoint(x: stemX + stemWidth / 2, y: noteY(upper + 6)),
+                    end: CGPoint(x: stemX + stemWidth / 2, y: noteY(lower + 6) + overhang),
+                    lineWidth: stemWidth,
+                    eventID: eventID
+                )
+            )
+        }
+
+        func noteAt(_ index: Int, _ glyph: GregorianGlyphName, withLine: Bool = true) {
+            let note = notes[index]
+            let alignsRight = GregorianGlyphCatalog.definition(for: glyph).alignment == .right
+            if withLine, let previous = last,
+               lineIsHanging || previous.alignsRight || abs(previous.pitch - note.pitch) > 1 {
+                let stemX = max(minX, x - stemWidth)
+                stem(at: stemX, from: previous.pitch, to: note.pitch, hanging: lineIsHanging, eventID: note.id)
+                if !alignsRight { x = stemX }
+            }
+            glyphs[index] = glyph
+            if alignsRight, last != nil {
+                lefts[index] = x - width(glyph)
+            } else {
+                lefts[index] = x
+                // A note written twice or thrice (`hss`) sets a head for each,
+                // a quarter staff space apart, an eighth after a stropha.
+                advances[index] = width(glyph) + (note.shape == .stropha ? intraNeumeSpacing / 2 : intraNeumeSpacing)
+                x += width(glyph) + CGFloat(note.repetitionCount - 1) * advances[index]
+            }
+            last = (note.pitch, alignsRight)
+            lineIsHanging = false
+        }
+
+        func virgaAt(_ index: Int) {
+            noteAt(index, .punctumQuadratum)
+            // The stem stands inside the head's right edge; a virga written
+            // twice or thrice (`hvv`) sets each head a quarter staff space
+            // after the last one's stem.
+            advances[index] = punctumWidth - stemWidth + intraNeumeSpacing
+            x = lefts[index] + CGFloat(notes[index].repetitionCount - 1) * advances[index]
+                + punctumWidth - stemWidth
+            virgae.insert(index)
+            last = (notes[index].pitch, false)
+            lineIsHanging = false
+        }
+
+        func advance(by distance: CGFloat) {
+            last = nil
+            lineIsHanging = false
+            x += distance
+        }
+
+        /// Starts a stem to hang on the left of the next note, down to
+        /// `lower`, or joins the next note to the neume the GABC joins this
+        /// one to.
+        func lineFrom(_ lower: Int) {
+            if x == originX, let joined = context.joinedFrom {
+                last = (joined.pitch, false)
+                minX = originX - stemWidth
+            } else {
+                last = (notes[lower].pitch, false)
+                lineIsHanging = true
+            }
+        }
+
+        /// Ends a stem from the last note, inside its right edge, down to
+        /// `index`'s.
+        func lineEnding(at index: Int) {
+            guard let previous = last else { return }
+            x -= stemWidth
+            stem(at: x, from: previous.pitch, to: notes[index].pitch, hanging: true, eventID: notes[index].id)
+            last = (notes[index].pitch, false)
+        }
+
+        func podatus(_ lower: Int, _ upper: Int) {
+            var lowerGlyph: GregorianGlyphName
+            let upperGlyph: GregorianGlyphName
+            switch notes[upper].liquescence {
+            case .small:
+                lowerGlyph = .beginningAscLiquescent
+                upperGlyph = .terminatingAscLiquescent
+            case .ascending:
+                lowerGlyph = .punctumQuadratum
+                upperGlyph = .punctumQuadratumAscLiquescent
+            case .descending:
+                lowerGlyph = .punctumQuadratum
+                upperGlyph = .punctumQuadratumDesLiquescent
+            case .none:
+                let wide = notes[upper].pitch - notes[lower].pitch > 1
+                lowerGlyph = wide ? .podatusLower : .podatusLowerShort
+                upperGlyph = wide ? .podatusUpper : .podatusUpperShort
+            }
+            if notes[lower].shape == .quilisma { lowerGlyph = .quilisma }
+            noteAt(lower, lowerGlyph)
+            noteAt(upper, upperGlyph)
+            last = nil
+        }
+
+        func clivisUpper(_ upper: Int, _ lower: Int?, glyph: GregorianGlyphName = .punctumQuadratum) {
+            if notes[upper].shape == .oriscus {
+                noteAt(upper, .oriscusDes, withLine: false)
+                return
+            }
+            var glyph = glyph
+            if let lower {
+                lineFrom(lower)
+                lineIsHanging = notes[lower].pitch < notes[upper].pitch
+                if notes[lower].liquescence == .small { glyph = .beginningDesLiquescent }
+            }
+            noteAt(upper, glyph)
+        }
+
+        /// The glyph of a note that ends a descent: a clivis's lower note, a
+        /// torculus's last.
+        func descentEnd(_ index: Int) -> GregorianGlyphName {
+            switch notes[index].liquescence {
+            case .small: .terminatingDesLiquescent
+            case .ascending: .punctumQuadratumAscLiquescent
+            case .descending: .punctumQuadratumDesLiquescent
+            case .none: .punctumQuadratum
+            }
+        }
+
+        func clivis(_ upper: Int, _ lower: Int) {
+            clivisUpper(upper, lower)
+            noteAt(lower, descentEnd(lower))
+            last = nil
+        }
+
+        func inclinata(from start: Int) {
             // Each diamond steps from the last by its interval, as Exsurge
-            // steps them; the first stands a quarter staff space clear of
-            // the note it falls from.
-            let inclinatum = glyphWidth(.punctumInclinatum)
-            var x = originX
-            for (index, note) in neume.notes.enumerated() {
-                if index > 0 {
-                    let previous = neume.notes[index - 1]
-                    if previous.shape == .inclinatum {
-                        let steps = abs(previous.pitch - note.pitch)
-                        x += inclinatum * (steps == 0 ? 1.1 : CGFloat(steps) * 2 / 3)
-                    } else {
-                        x += glyphWidth(glyphName(for: previous)) + 0.25 * staffStep * 2
-                    }
+            // steps them: the advance of a diamond and a tenth for a unison,
+            // two thirds of one for each step.
+            let advance = width(.punctumInclinatum)
+            for index in start..<notes.count {
+                if index > start {
+                    let steps = abs(notes[index - 1].pitch - notes[index].pitch)
+                    x += advance * (steps == 0 ? 1.1 : CGFloat(steps) * 2 / 3)
                 }
-                noteOrigins.append(x)
+                glyphs[index] = notes[index].liquescence == .small
+                    ? .punctumInclinatumLiquescent
+                    : .punctumInclinatum
+                lefts[index] = x
             }
-        case .porrectus where neume.notes.count >= 3,
-             .porrectusFlexus where neume.notes.count >= 3:
-            let swashWidth = GregorianGlyphCatalog.definition(for: Self.porrectusSwash(neume)).bounds.width * glyphScale
-            noteOrigins = [originX, originX + swashWidth - punctumWidth]
-            for index in 2..<neume.notes.count {
-                noteOrigins.append(originX + swashWidth + CGFloat(index - 2) * punctumWidth * 0.92)
-            }
-        case .bivirga, .trivirga, .apostropha, .distropha, .tristropha:
-            // Notes repeated on one pitch stand a little apart.
-            var x = originX
-            for index in neume.notes.indices {
-                if index > 0 {
-                    let previous = neume.notes[index - 1]
-                    let glyph = stropharum.contains(neume.form) ? .stropha : glyphName(for: previous)
-                    x += glyphWidth(glyph) + repeatGap(previous)
-                }
-                noteOrigins.append(x)
-            }
-        default:
-            noteOrigins = neume.notes.indices.map { originX + CGFloat($0) * punctumWidth * 0.92 }
-        }
-        // A note written twice or thrice (`hvv`, `hsss`) draws a glyph for
-        // each, a repeated note's gap apart, and moves the notes after it
-        // along by as much.
-        var shift: CGFloat = 0
-        for (index, note) in neume.notes.enumerated() {
-            noteOrigins[index] += shift
-            let glyph = stropharum.contains(neume.form) ? .stropha : glyphName(for: note)
-            shift += CGFloat(note.repetitionCount - 1) * (glyphWidth(glyph) + repeatGap(note))
+            last = nil
         }
 
-        let isPorrectus = neume.form == .porrectus || neume.form == .porrectusFlexus
-        for (index, note) in neume.notes.enumerated() {
-            let y = staffCenter - CGFloat(note.pitch - 6) * staffStep
-            let noteOriginX = noteOrigins[index]
+        func porrectusSwash(_ start: Int, _ end: Int) {
+            if let previous = last,
+               lineIsHanging || previous.alignsRight || abs(previous.pitch - notes[start].pitch) > 1 {
+                x = max(minX, x - stemWidth)
+                stem(at: x, from: previous.pitch, to: notes[start].pitch, hanging: lineIsHanging, eventID: notes[start].id)
+            }
+            let swash: GregorianGlyphName = switch max(1, min(4, notes[start].pitch - notes[end].pitch)) {
+            case 1: .porrectus1
+            case 2: .porrectus2
+            case 3: .porrectus3
+            default: .porrectus4
+            }
+            glyphs[start] = swash
+            lefts[start] = x
+            x += width(swash)
+            // The swash engraves the second note too, at its right end.
+            glyphs[end] = .none
+            lefts[end] = x - punctumWidth
+            last = (notes[end].pitch, false)
+            lineIsHanging = false
+        }
+
+        /// A lone note's glyph, as Exsurge draws a punctum.
+        func punctumGlyph(_ note: GregorianNote) -> GregorianGlyphName {
+            if note.liquescence != .none {
+                return switch (note.shape, note.liquescence) {
+                case (.inclinatum, _): .punctumInclinatumLiquescent
+                case (.oriscus, _): .oriscusLiquescent
+                case (_, .ascending): .punctumQuadratumAscLiquescent
+                case (_, .descending): .punctumQuadratumDesLiquescent
+                default: .punctumQuadratumLiquescent
+                }
+            }
+            if note.isCavum { return .punctumCavum }
+            return switch note.shape {
+            case .inclinatum: .punctumInclinatum
+            case .quilisma: .quilisma
+            case .oriscus: .oriscusDes
+            case .stropha: .stropha
+            default: .punctumQuadratum
+            }
+        }
+
+        /// A note of a stropha's form: a stropha only where the GABC writes
+        /// one (`s`); a plain note repeated is a punctum.
+        func strophaGlyph(_ note: GregorianNote) -> GregorianGlyphName {
+            if note.shape == .stropha { return .stropha }
+            switch note.liquescence {
+            case .ascending: return .punctumQuadratumAscLiquescent
+            case .descending: return .punctumQuadratumDesLiquescent
+            default: return note.isCavum ? .punctumCavum : .punctumQuadratum
+            }
+        }
+
+        func head(_ index: Int) {
+            if notes[index].shape == .virga {
+                virgaAt(index)
+            } else {
+                noteAt(index, notes[index].shape == .quilisma ? .quilisma : .punctumQuadratum)
+            }
+        }
+
+        // Where the diamonds begin, if all the notes from there are diamonds.
+        let inclinataStart = (0..<notes.count).first { start in
+            notes[start...].allSatisfy { $0.shape == .inclinatum }
+        }
+        switch neume.form {
+        case .punctaInclinata:
+            inclinata(from: 0)
+        case .climacus where inclinataStart == 1, .ancus where inclinataStart == 1:
+            head(0)
+            advance(by: intraNeumeSpacing)
+            inclinata(from: 1)
+        case .pesSubpunctis where inclinataStart == 2:
+            podatus(0, 1)
+            advance(by: intraNeumeSpacing * 0.68)
+            inclinata(from: 2)
+        case .virga, .bivirga, .trivirga:
+            for index in notes.indices {
+                if index > 0 { advance(by: intraNeumeSpacing) }
+                virgaAt(index)
+            }
+        case .apostropha, .distropha, .tristropha:
+            let strophae = notes.prefix(2).filter { $0.shape == .stropha }.count
+            let gap = neume.form == .tristropha
+                ? (notes[0].shape == .stropha ? intraNeumeSpacing / 2 : intraNeumeSpacing)
+                : intraNeumeSpacing - CGFloat(strophae) * intraNeumeSpacing / 4
+            for index in notes.indices {
+                if index > 0 { advance(by: gap) }
+                noteAt(index, strophaGlyph(notes[index]))
+            }
+        case .oriscus where notes.count == 1:
+            let rises = context.next.map { $0.pitch > notes[0].pitch } ?? false
+            noteAt(0, notes[0].liquescence != .none ? .oriscusLiquescent : (rises ? .oriscusAsc : .oriscusDes))
+        case .clivis where notes.count == 2:
+            clivis(0, 1)
+        case .ancus where notes.count == 3:
+            clivisUpper(0, 1)
+            let middleGlyph: GregorianGlyphName = notes[2].liquescence == .small
+                ? .beginningDesLiquescent
+                : .punctumQuadratum
+            clivisUpper(1, notes[0].pitch - notes[1].pitch > 1 ? 0 : nil, glyph: middleGlyph)
+            noteAt(2, descentEnd(2))
+            last = nil
+        case .podatus where notes.count == 2:
+            podatus(0, 1)
+        case .pesQuassus where notes.count == 2:
+            noteAt(0, notes[0].shape == .oriscus ? .oriscusAsc : .punctumQuadratum)
+            if notes[1].pitch - notes[0].pitch == 1 {
+                virgaAt(1)
+            } else {
+                noteAt(1, notes[1].liquescence == .descending ? .punctumQuadratumDesLiquescent : .punctumQuadratum)
+                lineEnding(at: 0)
+            }
+        case .porrectus where notes.count == 3:
+            lineFrom(1)
+            porrectusSwash(0, 1)
+            let third: GregorianGlyphName = switch notes[2].liquescence {
+            case .small: .terminatingAscLiquescent
+            case .descending: .punctumQuadratumDesLiquescent
+            default: notes[2].pitch - notes[1].pitch > 1 ? .podatusUpper : .podatusUpperShort
+            }
+            noteAt(2, third)
+        case .porrectusFlexus where notes.count == 4:
+            lineFrom(1)
+            porrectusSwash(0, 1)
+            noteAt(2, notes[3].liquescence == .small ? .punctumQuadratumDesLiquescent : .punctumQuadratum)
+            noteAt(3, descentEnd(3))
+        case .torculus where notes.count == 3:
+            noteAt(0, notes[0].shape == .quilisma ? .quilisma : .punctumQuadratum)
+            noteAt(1, .punctumQuadratum)
+            noteAt(2, descentEnd(2))
+        case .torculusResupinus where notes.count == 4:
+            noteAt(0, notes[0].shape == .quilisma ? .quilisma : .punctumQuadratum)
+            porrectusSwash(1, 2)
+            noteAt(3, notes[3].liquescence == .small
+                ? .terminatingAscLiquescent
+                : (notes[2].liquescence == .descending ? .punctumQuadratumDesLiquescent : .podatusUpper))
+        case .torculusResupinusFlexus where notes.count == 5:
+            noteAt(0, notes[0].shape == .quilisma ? .quilisma : .punctumQuadratum)
+            porrectusSwash(1, 2)
+            noteAt(3, notes[4].liquescence == .small ? .punctumQuadratumDesLiquescent : .punctumQuadratum)
+            noteAt(4, descentEnd(4))
+        case .scandicus where notes.count == 3:
+            if notes[2].shape == .virga {
+                podatus(0, 1)
+                virgaAt(2)
+            } else {
+                noteAt(0, notes[0].shape == .quilisma ? .quilisma : .punctumQuadratum)
+                podatus(1, 2)
+            }
+        case .scandicusFlexus where notes.count == 4:
+            if notes[2].shape == .virga {
+                podatus(0, 1)
+                advance(by: intraNeumeSpacing)
+                clivis(2, 3)
+            } else {
+                noteAt(0, .punctumQuadratum)
+                podatus(1, 2)
+                advance(by: intraNeumeSpacing)
+                noteAt(3, notes[3].liquescence == .ascending
+                    ? .punctumQuadratumAscLiquescent
+                    : (notes[3].liquescence == .descending ? .punctumQuadratumDesLiquescent : .punctumQuadratum))
+            }
+        case .salicus where notes.count == 3:
+            noteAt(0, .punctumQuadratum)
+            advance(by: intraNeumeSpacing)
+            noteAt(1, .oriscusAsc)
+            switch notes[2].liquescence {
+            case .small: noteAt(2, .terminatingAscLiquescent)
+            case .ascending: noteAt(2, .punctumQuadratumAscLiquescent)
+            case .descending: noteAt(2, .punctumQuadratumDesLiquescent)
+            case .none: virgaAt(2)
+            }
+        case .salicusFlexus where notes.count == 4:
+            noteAt(0, .punctumQuadratum)
+            advance(by: intraNeumeSpacing)
+            noteAt(1, .oriscusAsc)
+            noteAt(2, notes[3].liquescence == .small ? .punctumQuadratumDesLiquescent : .punctumQuadratum)
+            noteAt(3, descentEnd(3))
+        default:
+            // A note alone, or a run the forms above do not name: its notes
+            // one after another, joined where they leap.
+            for index in notes.indices {
+                if notes[index].shape == .virga {
+                    virgaAt(index)
+                } else {
+                    noteAt(index, punctumGlyph(notes[index]))
+                }
+            }
+        }
+
+        // The head each note's signs are set by, the last of a note written
+        // twice or thrice; nil for a custos.
+        var signFrames = [CGRect?](repeating: nil, count: notes.count)
+        for (index, note) in notes.enumerated() {
+            let y = noteY(note.pitch)
+            let glyph = glyphs[index]
             // Where the note's head is, whatever glyph engraves it.
             let headFrame = CGRect(
-                x: noteOriginX,
+                x: lefts[index],
                 y: y - punctumWidth / 2,
                 width: punctumWidth,
                 height: punctumWidth
@@ -1726,7 +2089,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 let custos = placedGlyph(
                     kind: .custos,
                     anchor: CGPoint(
-                        x: noteOriginX
+                        x: lefts[index]
                             + GregorianGlyphCatalog.definition(for: .custosShort).origin.x * glyphScale,
                         y: y
                     ),
@@ -1736,22 +2099,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 appendEvent(note, neume: neume, frame: custos.frame, lineIndex: lineIndex, to: &result)
                 continue
             }
-            var glyphName = glyphName(for: note)
-            if note.shape == .oriscus, note.liquescence == .none,
-               index + 1 < neume.notes.count {
-                glyphName = neume.notes[index + 1].pitch < note.pitch ? .oriscusDes : .oriscusAsc
-            }
-
-            if [.apostropha, .distropha, .tristropha].contains(neume.form) {
-                glyphName = .stropha
-            } else if neume.form == .pesQuassus, neume.notes.count >= 2 {
-                glyphName = index == 0 ? .oriscusAsc : (index == 1 ? .podatusUpper : glyphName)
-            } else if neume.form == .podatus, neume.notes.count >= 2 {
-                glyphName = index == 0 ? .podatusLower : (index == 1 ? .podatusUpper : glyphName)
-            } else if isPorrectus, index == 0 {
-                glyphName = Self.porrectusSwash(neume)
-            } else if isPorrectus, index == 1 {
-                // The porrectus swash already engraves the first two notes.
+            if glyph == .none {
+                // The second note of a porrectus, which its swash engraves.
+                signFrames[index] = headFrame
                 appendLedgerLines(
                     for: headFrame,
                     noteY: y,
@@ -1765,28 +2115,46 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 appendEvent(note, neume: neume, frame: headFrame, lineIndex: lineIndex, to: &result)
                 continue
             }
+            let isSwash = [.porrectus1, .porrectus2, .porrectus3, .porrectus4].contains(glyph)
 
-            let definition = GregorianGlyphCatalog.definition(for: glyphName)
+            let definition = GregorianGlyphCatalog.definition(for: glyph)
             let first = placedGlyph(
-                kind: .catalog(glyphName),
-                anchor: CGPoint(x: noteOriginX + definition.origin.x * glyphScale, y: y),
+                kind: .catalog(glyph),
+                anchor: CGPoint(x: lefts[index] + definition.origin.x * glyphScale, y: y),
                 scale: glyphScale,
                 eventID: note.id
             )
             // The same glyph again for each further time the note is written.
-            let repetitions = (1..<max(1, note.repetitionCount)).map { repetition in
+            let heads = [first] + (1..<max(1, note.repetitionCount)).map { repetition in
                 GregorianPlacedGlyph(
                     kind: first.kind,
-                    frame: first.frame.offsetBy(
-                        dx: CGFloat(repetition) * (first.frame.width + repeatGap(note)),
-                        dy: 0
-                    ),
+                    frame: first.frame.offsetBy(dx: CGFloat(repetition) * advances[index], dy: 0),
                     eventID: note.id
                 )
             }
             // Signs written after a repeated note belong to the last of them.
-            let placed = repetitions.last ?? first
-            let noteFrame = repetitions.reduce(first.frame) { $0.union($1.frame) }
+            let placed = heads[heads.count - 1]
+            var noteFrame = heads.reduce(first.frame) { $0.union($1.frame) }
+            if virgae.contains(index) {
+                // A virga's stem falls nearly two steps from a note in a
+                // space, nearly three from one on a line.
+                let length = (abs(note.pitch - 6) % 2 == 0 ? 1.8 : 2.7) * staffStep
+                for head in heads {
+                    let stemX = head.frame.minX + punctumWidth - stemWidth / 2
+                    result.strokes.append(
+                        GregorianPlacedStroke(
+                            kind: .connector,
+                            start: CGPoint(x: stemX, y: y),
+                            end: CGPoint(x: stemX, y: y + length),
+                            lineWidth: stemWidth,
+                            eventID: note.id
+                        )
+                    )
+                    noteFrame = noteFrame.union(
+                        CGRect(x: stemX - stemWidth / 2, y: y, width: stemWidth, height: length)
+                    )
+                }
+            }
 
             if let accidental = note.accidental {
                 let accidentalKind = Self.glyphKind(for: accidental)
@@ -1810,76 +2178,14 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 result.inkFrame = result.inkFrame.union(accidentalGlyph.frame)
             }
 
-            if index > 0, !Self.connectedForms.contains(neume.form) {
-                let previous = neume.notes[index - 1]
-                if previous.pitch != note.pitch {
-                    let previousY = staffCenter - CGFloat(previous.pitch - 6) * staffStep
-                    let connectorX = noteOriginX + 0.7 * glyphScale
-                    result.strokes.append(
-                        GregorianPlacedStroke(
-                            kind: .connector,
-                            start: CGPoint(x: connectorX, y: previousY),
-                            end: CGPoint(x: connectorX, y: y),
-                            lineWidth: max(1, 18 * glyphScale),
-                            eventID: note.id
-                        )
-                    )
-                }
-            }
-
-            result.glyphs.append(first)
-            result.glyphs.append(contentsOf: repetitions)
+            result.glyphs.append(contentsOf: heads)
             result.inkFrame = result.inkFrame.union(noteFrame)
 
-            for moraIndex in 0..<note.moraCount {
-                let mora = placedGlyph(
-                    kind: .mora,
-                    anchor: CGPoint(
-                        x: placed.frame.maxX + (5 + CGFloat(moraIndex) * 3.5) * notationScale,
-                        y: y
-                    ),
-                    scale: glyphScale * 0.72,
-                    eventID: note.id
-                )
-                result.glyphs.append(mora)
-                result.inkFrame = result.inkFrame.union(mora.frame)
-            }
-            if note.hasEpisema {
-                let above = note.episemaPosition == .above
-                let episemaY = above ? placed.frame.minY - 3 * notationScale : placed.frame.maxY + 3 * notationScale
-                result.strokes.append(
-                    GregorianPlacedStroke(
-                        kind: .episema,
-                        start: CGPoint(x: placed.frame.minX - notationScale, y: episemaY),
-                        end: CGPoint(x: placed.frame.maxX + notationScale, y: episemaY),
-                        lineWidth: max(1, 1.3 * notationScale),
-                        eventID: note.id
-                    )
-                )
-            }
-            if note.hasIctus {
-                let above = note.episemaPosition == .above
-                let ictusName: GregorianGlyphName = above
-                    ? .verticalEpisemaAbove
-                    : .verticalEpisemaBelow
-                let ictus = placedGlyph(
-                    kind: .catalog(ictusName),
-                    anchor: CGPoint(
-                        x: placed.frame.midX,
-                        y: above
-                            ? placed.frame.minY - 2 * notationScale
-                            : placed.frame.maxY + 2 * notationScale
-                    ),
-                    scale: glyphScale,
-                    eventID: note.id
-                )
-                result.glyphs.append(ictus)
-                result.inkFrame = result.inkFrame.union(ictus.frame)
-            }
+            signFrames[index] = placed.frame
 
             appendLedgerLines(
-                // The swash's first head; any other glyph's whole frame.
-                for: isPorrectus && index == 0 ? headFrame : noteFrame,
+                // A swash's first head; any other glyph's whole frame.
+                for: isSwash ? headFrame : noteFrame,
                 noteY: y,
                 staffTop: staffTop,
                 staffBottom: staffBottom,
@@ -1890,49 +2196,287 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             )
             appendEvent(note, neume: neume, frame: noteFrame, lineIndex: lineIndex, to: &result)
         }
+
+        appendSigns(
+            of: neume,
+            frames: signFrames,
+            glyphs: glyphs,
+            staffCenter: staffCenter,
+            staffStep: staffStep,
+            glyphScale: glyphScale,
+            notationScale: notationScale,
+            to: &result
+        )
         return result
     }
 
-    private func glyphName(for note: GregorianNote) -> GregorianGlyphName {
-        if note.isCavum { return .punctumCavum }
-        switch note.shape {
-        case .punctum:
-            return switch note.liquescence {
-            case .ascending: .punctumQuadratumAscLiquescent
-            case .descending: .punctumQuadratumDesLiquescent
-            case .small: .punctumQuadratumLiquescent
-            case .none: .punctumQuadratum
-            }
-        case .virga: return .virgaShort
-        case .quilisma: return .quilisma
-        case .liquescent:
-            return note.liquescence == .ascending
-                ? .terminatingAscLiquescent
-                : .terminatingDesLiquescent
-        case .inclinatum:
-            return note.liquescence == .none ? .punctumInclinatum : .punctumInclinatumLiquescent
-        case .oriscus:
-            return note.liquescence == .none ? .oriscusAsc : .oriscusLiquescent
-        case .stropha: return .stropha
-        case .custos: return .custosShort
+    /// Sets a neume's dots, episemata and ictus as Exsurge places them, the
+    /// dot at the Liber's size: on the side the GABC writes, or else on the
+    /// side the neume gives each note. A dot stands just after its note, in
+    /// its space, or in the space above a note on a line; a double dot after
+    /// a neume's last two notes gives each its own. An episema keeps clear
+    /// of its note and of the staff's lines, and runs on over the next
+    /// note's on the same side. An ictus stands a step beyond its note, off
+    /// the line there.
+    private func appendSigns(
+        of neume: GregorianNeume,
+        frames: [CGRect?],
+        glyphs: [GregorianGlyphName],
+        staffCenter: CGFloat,
+        staffStep: CGFloat,
+        glyphScale: CGFloat,
+        notationScale: CGFloat,
+        to result: inout Composition
+    ) {
+        let notes = neume.notes
+        func noteY(_ pitch: Int) -> CGFloat {
+            staffCenter - CGFloat(pitch - 6) * staffStep
         }
-    }
+        func onLine(_ note: GregorianNote) -> Bool {
+            abs(note.pitch - 6) % 2 == 1
+        }
 
-    /// Forms whose glyphs join their notes themselves, with no connector
-    /// drawn between them.
-    private static let connectedForms: Set<GregorianNeumeForm> = [
-        .podatus, .pesQuassus, .porrectus, .porrectusFlexus
-    ]
+        // Dots. A double dot on a neume's last note dots the note before it
+        // too, set after the last.
+        var dots = notes.map { $0.moraCount }
+        var dotAfterNext = notes.map { _ in false }
+        if let last = notes.indices.last, last > 0, notes[last].moraCount > 1 {
+            dots[last] -= 1
+            dots[last - 1] += 1
+            dotAfterNext[last - 1] = true
+        }
+        var dotSides = notes.map(\.moraPosition)
+        func lowerDot(_ index: Int) {
+            if dotSides[index] == nil, dots[index] > 0 { dotSides[index] = .below }
+        }
+        switch neume.form {
+        case .podatus, .pesQuassus, .pesSubpunctis:
+            // The lower note of a pes, on a line, has its dot below it.
+            if notes.count > 1, onLine(notes[0]) { lowerDot(0) }
+        case .clivis, .torculus, .porrectus:
+            // A clivis's lower note, on a line a step down, has its dot
+            // below it.
+            let pair = neume.form == .clivis ? (0, 1) : (1, 2)
+            if notes.count > pair.1, notes[pair.0].pitch - notes[pair.1].pitch == 1, onLine(notes[pair.1]) {
+                lowerDot(pair.1)
+            }
+        default:
+            break
+        }
+        if [.climacus, .punctaInclinata, .pesSubpunctis].contains(neume.form), notes.count > 1 {
+            // So has the last diamond, on a line a step below the one before.
+            let last = notes.count - 1
+            if notes[last - 1].pitch - notes[last].pitch == 1, onLine(notes[last]) { lowerDot(last) }
+        }
+        let dotDefinition = GregorianGlyphCatalog.definition(for: .mora)
+        // The Liber's dot: a third of a staff space across, a tenth of one
+        // after its note.
+        let dotScale = 0.33 * staffStep * 2 / dotDefinition.bounds.width
+        let dotWidth = dotDefinition.bounds.width * dotScale
+        let dotGap = 0.1 * staffStep * 2
+        for (index, note) in notes.enumerated() where dots[index] > 0 {
+            guard let frame = frames[index] else { continue }
+            var y = noteY(note.pitch)
+            switch dotSides[index] {
+            case .above: y -= (onLine(note) ? 0.75 : 1.75) * staffStep
+            case .below: y += (onLine(note) ? 0.75 : 1.75) * staffStep
+            case nil:
+                if onLine(note) {
+                    y -= 0.75 * staffStep
+                } else if index + 1 < notes.count, notes[index + 1].pitch == note.pitch - 1 {
+                    y -= 0.25 * staffStep
+                }
+            }
+            var left = frame.maxX + dotGap
+            if index + 1 < notes.count, let next = frames[index + 1] {
+                if dotAfterNext[index] {
+                    left = next.maxX + dotGap
+                } else if next.maxX > frame.maxX {
+                    // Between the note and the end of the next.
+                    left = frame.maxX + (next.maxX - frame.maxX - dotWidth) / 2
+                }
+            }
+            for dot in 0..<dots[index] {
+                let mora = placedGlyph(
+                    kind: .mora,
+                    anchor: CGPoint(
+                        x: left + CGFloat(dot) * (dotWidth + dotGap) + dotDefinition.origin.x * dotScale,
+                        y: y
+                    ),
+                    scale: dotScale,
+                    eventID: note.id
+                )
+                result.glyphs.append(mora)
+                result.inkFrame = result.inkFrame.union(mora.frame)
+            }
+        }
 
-    /// The swash that engraves a porrectus's first two notes, by their interval.
-    private static func porrectusSwash(_ neume: GregorianNeume) -> GregorianGlyphName {
-        let first = neume.notes.first?.pitch ?? 0
-        let second = neume.notes.dropFirst().first?.pitch ?? 0
-        return switch max(1, min(4, abs(first - second))) {
-        case 1: .porrectus1
-        case 2: .porrectus2
-        case 3: .porrectus3
-        default: .porrectus4
+        // Episemata, on the side the neume gives each note unless the GABC
+        // writes one.
+        var episemaSides = notes.map(\.episemaPosition)
+        func side(_ index: Int, _ position: GregorianEpisemaPosition) {
+            if index < notes.count, episemaSides[index] == nil { episemaSides[index] = position }
+        }
+        func clivisSides(_ upper: Int, _ lower: Int) -> Bool {
+            side(upper, .above)
+            let hasTop = upper < notes.count && notes[upper].hasEpisema
+            side(lower, hasTop ? .above : .below)
+            return hasTop
+        }
+        func podatusSides(_ lower: Int, _ upper: Int) {
+            side(lower, .below)
+            side(upper, .above)
+        }
+        switch neume.form {
+        case .clivis:
+            _ = clivisSides(0, 1)
+        case .ancus:
+            _ = clivisSides(0, 2)
+            _ = clivisSides(1, 2)
+        case .podatus, .pesQuassus, .pesSubpunctis:
+            podatusSides(0, 1)
+        case .porrectus:
+            _ = clivisSides(0, 1)
+            podatusSides(1, 2)
+        case .porrectusFlexus:
+            side(0, .above)
+            let hasTop = clivisSides(2, 3) || notes[0].hasEpisema
+            side(1, hasTop ? .above : .below)
+        case .torculus:
+            let hasTop = clivisSides(1, 2)
+            side(0, hasTop ? .above : .below)
+        case .torculusResupinus, .torculusResupinusFlexus:
+            _ = clivisSides(1, 2)
+            podatusSides(2, 3)
+            _ = clivisSides(1, 0)
+        case .scandicus where notes.count > 2 && notes[2].shape == .virga:
+            podatusSides(0, 1)
+        case .scandicus, .scandicusFlexus:
+            side(0, .below)
+            podatusSides(1, 2)
+        case .salicus, .salicusFlexus:
+            for index in notes.indices { side(index, .below) }
+        default:
+            break
+        }
+        let episemaWeight = max(1, 1.3 * notationScale)
+        let staffLines = 4
+        var runs: [(side: GregorianEpisemaPosition, y: CGFloat, left: CGFloat, right: CGFloat, eventID: String)] = []
+        for (index, note) in notes.enumerated() where note.hasEpisema {
+            guard let frame = frames[index] else { continue }
+            let position = episemaSides[index] ?? .above
+            // Exsurge's place: a quarter step clear of the note, centred
+            // between it and the next line if there is room, else in the
+            // nearest third of a space off the line.
+            let clearance = staffStep * 0.25
+            var step: CGFloat
+            if position == .below {
+                var y = frame.maxY + clearance - staffCenter
+                if glyphs[index] == .none { y += staffStep / 2 }
+                step = (y / staffStep).rounded(.up)
+                if abs(step.truncatingRemainder(dividingBy: 2)) == 0 {
+                    step = (step + 3 / 4 + (y - clearance) / staffStep) / 2
+                } else {
+                    step = (((1.5 * y) / staffStep - 0.5).rounded(.up) * 2 + 1) / 3
+                    if abs(step).truncatingRemainder(dividingBy: 2) == 1 {
+                        step += abs(step) < CGFloat(staffLines) ? 2 / 3 : 1 / 3
+                    }
+                }
+            } else {
+                let y = frame.minY - clearance - staffCenter
+                step = (y / staffStep).rounded(.down)
+                if abs(step.truncatingRemainder(dividingBy: 2)) == 0 {
+                    step = (step - 3 / 4 + (y + clearance) / staffStep) / 2
+                } else {
+                    step = (((1.5 * y) / staffStep - 0.5).rounded(.down) * 2 + 1) / 3
+                    if abs(step).truncatingRemainder(dividingBy: 2) == 1 {
+                        step -= abs(step) < CGFloat(staffLines) ? 2 / 3 : 1 / 3
+                    }
+                }
+            }
+            var left = frame.minX
+            var width = frame.width
+            switch glyphs[index] {
+            case .porrectus1, .porrectus2, .porrectus3, .porrectus4:
+                width = staffStep
+            case .none:
+                width = staffStep
+                left = frame.maxX - width
+            case .punctumInclinatum where index > 0
+                && glyphs[index - 1] == .punctumInclinatum
+                && notes[index - 1].pitch - note.pitch == 1:
+                width *= 2 / 3
+                left += 0.5 * width
+            case .punctumInclinatumLiquescent:
+                width *= 2 / 3
+                left += 0.25 * width
+            default:
+                break
+            }
+            let y = staffCenter + step * staffStep
+            // An episema runs on over the next note's on the same side, at
+            // the height that clears both.
+            if let previous = runs.last, previous.side == position, left - previous.right < staffStep {
+                runs[runs.count - 1] = (
+                    position,
+                    position == .above ? min(previous.y, y) : max(previous.y, y),
+                    previous.left,
+                    left + width,
+                    previous.eventID
+                )
+            } else {
+                runs.append((position, y, left, left + width, note.id))
+            }
+        }
+        for run in runs {
+            result.strokes.append(
+                GregorianPlacedStroke(
+                    kind: .episema,
+                    start: CGPoint(x: run.left, y: run.y),
+                    end: CGPoint(x: run.right, y: run.y),
+                    lineWidth: episemaWeight,
+                    eventID: run.eventID
+                )
+            )
+        }
+
+        // The ictus: above a virga, the top of a rise and the head of a
+        // fall, and below any other note, unless the GABC writes its side.
+        for (index, note) in notes.enumerated() where note.hasIctus {
+            guard let frame = frames[index] else { continue }
+            let above: Bool
+            if let written = note.ictusPosition {
+                above = written == .above
+            } else if note.shape == .virga {
+                above = true
+            } else if note.shape != .inclinatum, index + 1 < notes.count {
+                above = notes[index + 1].pitch < note.pitch
+            } else {
+                above = index > 0 && index == notes.count - 1 && notes[index - 1].pitch < note.pitch
+            }
+            let position = note.pitch - 6 + (above ? 1 : -1)
+            // Off a staff line, or nearer if the space is free; further from
+            // an episema on the same side.
+            let onStaffLine = abs(position) % 2 == 1 && abs(position) < staffLines
+            let episemaBeside = note.hasEpisema && (episemaSides[index] ?? .above) == (above ? .above : .below)
+            var extra: CGFloat = 0
+            if note.shape == .inclinatum, !onStaffLine, !episemaBeside { extra = 0.3 }
+            if episemaBeside { extra = 0.4 }
+            let offset = staffStep * (extra + (onStaffLine ? 0.3 : -0.2)) * (above ? -1 : 1)
+            var centerX = frame.midX
+            switch glyphs[index] {
+            case .porrectus1, .porrectus2, .porrectus3, .porrectus4: centerX = frame.minX + staffStep / 2
+            case .none: centerX = frame.maxX - staffStep / 2
+            default: break
+            }
+            let ictus = placedGlyph(
+                kind: .catalog(above ? .verticalEpisemaAbove : .verticalEpisemaBelow),
+                anchor: CGPoint(x: centerX, y: noteY(position + 6) + offset),
+                scale: glyphScale,
+                eventID: note.id
+            )
+            result.glyphs.append(ictus)
+            result.inkFrame = result.inkFrame.union(ictus.frame)
         }
     }
 
@@ -2050,8 +2594,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         case .minor: staffGap * 2
         case .major, .final: staffGap * 3
         }
+        // A quarter bar crosses the top line, as the Liber draws it.
         let top = division == .minima
-            ? staffTop + staffGap
+            ? staffTop - staffGap / 2
             : staffTop + (staffGap * 3 - height) / 2
         let count = division == .final ? 2 : 1
         for index in 0..<count {

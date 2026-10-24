@@ -48,7 +48,7 @@ Add the package in Xcode (File ▸ Add Package Dependencies…, with
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.5.0")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.6.0")
 ],
 targets: [
     .target(
@@ -211,7 +211,7 @@ and in the app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.5.0")
+    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.6.0")
 }
 ```
 
@@ -291,8 +291,10 @@ Both languages read the same notation, and fail on the same tokens.
   `~`, `<` or `>`), quilisma (`w`), oriscus (`o`), stropha (`s`), cavum (`r`,
   `r0`), liquescents (`~`, `<`, `>`), a written custos (`f+`), and repeated
   virgae and strophae (`hvv`, `hsss`).
-- Mora (`.`, `..`), horizontal episema (`_`; below the note with `_0`),
-  vertical episema (`'`), and accidentals (`ix`, `iy`, `i#`).
+- Mora (`.`; `..` dots a neume's last two notes), horizontal episema (`_`;
+  `__` and `___` reach back over the notes before), vertical episema (`'`),
+  each set above with `1` or below with `0` after it (`.1`, `_0`, `'1`), and
+  accidentals (`ix`, `iy`, `i#`).
 - Divisions `,` `` ` `` `;` `:` `::`, the line breaks `z` and `Z`, and the
   neume separators: `/` a quarter staff space, `//` and a space within the
   group half of one, `!` none. `z0`, a custos for the next note, breaks no
@@ -330,7 +332,17 @@ custos at the staff's end.
 
 Neumes are grouped and named as Exsurge groups them: podatus, clivis,
 torculus, porrectus, scandicus, climacus, ancus, salicus, pes subpunctis and
-the rest. `[…]` annotations and the signs this engraver does not draw (`@`,
+the rest; notes repeated on one pitch make a distropha or a tristropha only
+where the run ends with them, and otherwise begin the next neume, a pressus
+whose punctum abuts it (`hhg`). They are drawn as Exsurge draws them, from
+its glyphs: notes joined by a stem where they leap, a clivis and a porrectus
+hung from a stem on the left, a virga's stem inside its head, a pes's upper
+note set over the lower, a porrectus's last note over the end of its
+oblique, and a climacus's diamonds stepped down unjoined. A dot is set at the
+Liber's size just after its note, in the space above a note on a line; an
+episema keeps off the staff's lines and runs on over the next note's; an
+ictus stands a step beyond its note, below unless the neume or the GABC sets
+it above; and a quarter bar crosses the top line. `[…]` annotations and the signs this engraver does not draw (`@`,
 `-`, `q`, `r1`–`r5`, digits) are skipped. Anything else in a notation group
 fails the parse with an unsupported-token error and its offset.
 

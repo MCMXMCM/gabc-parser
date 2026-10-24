@@ -72,7 +72,7 @@ final class LineLayoutTests: XCTestCase {
                     .filter { $0.lineIndex == staff.index }
                     .map { $0.inkFrame.maxX - (end - 10) }
                 let bars = layout.strokes
-                    .filter { staff.frame.minY <= $0.start.y && $0.start.y <= staff.frame.maxY }
+                    .filter { staff.frame.minY <= $0.midY && $0.midY <= staff.frame.maxY }
                     .compactMap { stroke -> CGFloat? in
                         guard case let .division(division) = stroke.kind else { return nil }
                         return stroke.start.x + (division == .final ? 4.5 : 6) - (end - 10)
@@ -101,7 +101,7 @@ final class LineLayoutTests: XCTestCase {
                     .map(\.frame)
                 for stroke in layout.strokes {
                     guard case .division(.minima) = stroke.kind,
-                          staff.frame.minY <= stroke.start.y, stroke.start.y <= staff.frame.maxY,
+                          staff.frame.minY <= stroke.midY, stroke.midY <= staff.frame.maxY,
                           let before = heads.filter({ $0.maxX < stroke.start.x }).map(\.maxX).max(),
                           let after = heads.filter({ $0.minX > stroke.start.x }).map(\.minX).min() else {
                         continue
@@ -185,7 +185,7 @@ final class LineLayoutTests: XCTestCase {
                 for lyric in words.dropFirst() where writtenWithBars && marks[lyric.neumeID]?.beginsWhatFollows == true {
                     let bar = layout.strokes.contains { stroke in
                         guard case .division = stroke.kind else { return false }
-                        return staff.frame.minY <= stroke.start.y && stroke.start.y <= staff.frame.maxY
+                        return staff.frame.minY <= stroke.midY && stroke.midY <= staff.frame.maxY
                             && stroke.start.x <= lyric.origin.x + 0.5
                             && words.allSatisfy { $0.origin.x >= lyric.origin.x || $0.origin.x + $0.width <= stroke.start.x + 0.5 }
                     }
@@ -226,7 +226,7 @@ final class LineLayoutTests: XCTestCase {
             for stroke in layout.strokes {
                 guard case .division = stroke.kind,
                       let staff = layout.staffs.first(where: {
-                          $0.frame.minY <= stroke.start.y && stroke.start.y <= $0.frame.maxY
+                          $0.frame.minY <= stroke.midY && stroke.midY <= $0.frame.maxY
                       }) else {
                     continue
                 }
@@ -269,4 +269,10 @@ final class LineLayoutTests: XCTestCase {
             XCTAssertGreaterThan(syllables.count, 1, "width \(width)")
         }
     }
+}
+
+private extension GregorianPlacedStroke {
+    /// The height of a stroke's middle: a quarter bar's is the top line it
+    /// crosses.
+    var midY: CGFloat { (start.y + end.y) / 2 }
 }

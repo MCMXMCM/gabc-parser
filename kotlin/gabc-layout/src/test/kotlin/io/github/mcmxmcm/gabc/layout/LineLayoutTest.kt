@@ -52,7 +52,7 @@ class LineLayoutTest {
                     .map { it.origin.x + it.width - end }
                 val notes = layout.neumes.filter { it.lineIndex == staff.index }.map { it.inkFrame.right - (end - 10) }
                 val bars = layout.strokes
-                    .filter { staff.frame.top <= it.start.y && it.start.y <= staff.frame.bottom }
+                    .filter { staff.frame.top <= it.midY && it.midY <= staff.frame.bottom }
                     .mapNotNull { stroke ->
                         val kind = stroke.kind as? GregorianStrokeKind.Division ?: return@mapNotNull null
                         stroke.start.x + (if (kind.division == GregorianDivision.Final) 4.5f else 6f) - (end - 10)
@@ -81,7 +81,7 @@ class LineLayoutTest {
                 for (stroke in layout.strokes) {
                     val kind = stroke.kind as? GregorianStrokeKind.Division ?: continue
                     if (kind.division != GregorianDivision.Minima) continue
-                    if (stroke.start.y < staff.frame.top || stroke.start.y > staff.frame.bottom) continue
+                    if (stroke.midY < staff.frame.top || stroke.midY > staff.frame.bottom) continue
                     val before = heads.filter { it.right < stroke.start.x }.maxOfOrNull { it.right } ?: continue
                     val after = heads.filter { it.left > stroke.start.x }.minOfOrNull { it.left } ?: continue
                     assertEquals("width $width, staff ${staff.index}", stroke.start.x - before, after - stroke.start.x, 0.5f)
@@ -140,7 +140,7 @@ class LineLayoutTest {
                 for (lyric in words.drop(1).filter { marks[it.neumeId]?.beginsWhatFollows == true }) {
                     val bar = layout.strokes.any { stroke ->
                         stroke.kind is GregorianStrokeKind.Division &&
-                            staff.frame.top <= stroke.start.y && stroke.start.y <= staff.frame.bottom &&
+                            staff.frame.top <= stroke.midY && stroke.midY <= staff.frame.bottom &&
                             stroke.start.x <= lyric.origin.x + 0.5f &&
                             words.all { it.origin.x >= lyric.origin.x || it.origin.x + it.width <= stroke.start.x + 0.5f }
                     }
@@ -180,7 +180,7 @@ class LineLayoutTest {
             val layout = GregorianEngravingLayoutEngine().layout(score, width = width)
             for (stroke in layout.strokes) {
                 if (stroke.kind !is GregorianStrokeKind.Division) continue
-                val staff = layout.staffs.firstOrNull { it.frame.top <= stroke.start.y && stroke.start.y <= it.frame.bottom } ?: continue
+                val staff = layout.staffs.firstOrNull { it.frame.top <= stroke.midY && stroke.midY <= it.frame.bottom } ?: continue
                 assertTrue(
                     "a bar begins staff ${staff.index} at width $width",
                     layout.events.any { it.lineIndex == staff.index && it.frame.right < stroke.start.x },
@@ -243,3 +243,6 @@ class LineLayoutTest {
         ).joinToString(" ")
     }
 }
+
+/** The height of a stroke's middle: a quarter bar's is the top line it crosses. */
+private val GregorianPlacedStroke.midY: Float get() = (start.y + end.y) / 2

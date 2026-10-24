@@ -319,7 +319,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                     is GregorianNotationElement.Neume -> {
                         val neume = element.neume
                         val composition = compose(
-                            neume, x - punctumWidth / 2, staffCenter, staffTop, staffBottom, staffStep, glyphScale, notationScale, lineIndex,
+                            neume, unit.context, x - punctumWidth / 2, staffCenter, staffTop, staffBottom, staffStep, glyphScale, notationScale, lineIndex,
                         )
                         glyphs += composition.glyphs
                         strokes += composition.strokes
@@ -418,6 +418,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         val lyricFocus: Float,
         val join: LyricJoin,
         val forcesBreak: Boolean,
+        /** The notes beside a neume that its engraving needs. */
+        val context: NeumeContext = NeumeContext(),
     ) {
         val neume: GregorianNeume? get() = (element as? GregorianNotationElement.Neume)?.neume
 
@@ -603,9 +605,28 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             lyricFocus: Float = 0f,
             join: LyricJoin = LyricJoin.Word,
             forcesBreak: Boolean = false,
-        ) = LayoutUnit(element, inkLeft, inkRight, lyricText, lyricWidth, lyricFocus, join, forcesBreak)
+            context: NeumeContext = NeumeContext(),
+        ) = LayoutUnit(element, inkLeft, inkRight, lyricText, lyricWidth, lyricFocus, join, forcesBreak, context)
 
-        return score.elements.map { element ->
+        // Each neume's context: the last note of the neume of its syllable that it follows with no space (`!`), and
+        // the next neume's first note.
+        val elements = score.elements
+        val contexts = arrayOfNulls<NeumeContext>(elements.size)
+        var nextNote: GregorianNote? = null
+        for (index in elements.indices.reversed()) {
+            val neume = (elements[index] as? GregorianNotationElement.Neume)?.neume ?: continue
+            val previous = (elements.getOrNull(index - 1) as? GregorianNotationElement.Neume)?.neume
+            val joinedFrom = if (neume.spaceBefore == GregorianNeumeSpace.Joined && previous?.syllableId == neume.syllableId) {
+                previous.notes.lastOrNull()
+            } else {
+                null
+            }
+            contexts[index] = NeumeContext(joinedFrom = joinedFrom, next = nextNote)
+            val first = neume.notes.firstOrNull()
+            if (first != null && !first.isCustos) nextNote = first
+        }
+
+        return elements.mapIndexed { elementIndex, element ->
             when (element) {
                 is GregorianNotationElement.Clef -> unit(element, inkRight = 24 * notationScale)
                 is GregorianNotationElement.Accidental -> {
@@ -650,7 +671,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                         previousLyricText = lyricText
                         previousLyricSyllableId = neume.syllableId
                     }
-                    val ink = notationInk(neume, glyphScale, notationScale)
+                    val context = contexts[elementIndex] ?: NeumeContext()
+                    val ink = notationInk(neume, context, glyphScale, notationScale)
                     unit(
                         element,
                         // A neume is placed by its first note's centre, under which its syllable's vowel stands.
@@ -660,29 +682,19 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                         lyricWidth = lyric.width,
                         lyricFocus = lyric.focus,
                         join = join,
+                        context = context,
                     )
                 }
             }
         }
     }
 
-    private fun porrectusSwash(neume: GregorianNeume): GregorianGlyphName {
-        val first = neume.notes.firstOrNull()?.pitch ?: 0
-        val second = neume.notes.getOrNull(1)?.pitch ?: 0
-        return when (abs(first - second).coerceIn(1, 4)) {
-            1 -> GregorianGlyphName.Porrectus1
-            2 -> GregorianGlyphName.Porrectus2
-            3 -> GregorianGlyphName.Porrectus3
-            else -> GregorianGlyphName.Porrectus4
-        }
-    }
-
     /** A neume's ink, from where its notation begins: its notes, with their dots, episemata and ledger lines. */
-    private fun notationInk(neume: GregorianNeume, glyphScale: Float, notationScale: Float): Pair<Float, Float> {
+    private fun notationInk(neume: GregorianNeume, context: NeumeContext, glyphScale: Float, notationScale: Float): Pair<Float, Float> {
         val staffStep = 100 * glyphScale
         val staffGap = staffStep * 2
         val composition = compose(
-            neume, originX = 0f, staffCenter = staffGap * 1.5f, staffTop = 0f, staffBottom = staffGap * 3, staffStep = staffStep,
+            neume, context, originX = 0f, staffCenter = staffGap * 1.5f, staffTop = 0f, staffBottom = staffGap * 3, staffStep = staffStep,
             glyphScale = glyphScale, notationScale = notationScale, lineIndex = 0,
         )
         val left = inkLeft(composition)
@@ -1161,8 +1173,22 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         return lines.ifEmpty { listOf(paragraph) }
     }
 
+    /**
+     * What a neume's builder needs of the notes beside it: the last note of the neume the GABC joins it to (`!`), from
+     * which its first stem may hang, and the first note of the next neume, by which a lone oriscus turns.
+     */
+    private class NeumeContext(val joinedFrom: GregorianNote? = null, val next: GregorianNote? = null)
+
+    /**
+     * Engraves a neume as Exsurge builds one, note by note from the left. Each note is set where the last ended, joined
+     * to it by a stem where the two stand more than a step apart. A clivis and a porrectus hang from a stem on their
+     * left; a virga's stem stands inside its head's right edge; a pes sets its upper note over the lower, joined on the
+     * right; a porrectus sets its last note over the end of its oblique; and the diamonds of a climacus step down from
+     * one another unjoined.
+     */
     private fun compose(
         neume: GregorianNeume,
+        context: NeumeContext,
         originX: Float,
         staffCenter: Float,
         staffTop: Float,
@@ -1173,130 +1199,479 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         lineIndex: Int,
     ): Composition {
         val result = Composition()
-        val punctumWidth = 100 * glyphScale
         val notes = neume.notes
+        val punctumWidth = 100 * glyphScale
+        // Exsurge's space between the parts of a neume: a quarter staff space.
+        val intraNeumeSpacing = staffStep / 2
+        // The weight of the stems that bind a neume's notes.
+        val stemWidth = max(1f, 18 * glyphScale)
+
+        fun noteY(pitch: Int): Float = staffCenter - (pitch - 6) * staffStep
+        fun width(name: GregorianGlyphName): Float = GregorianGlyphCatalog.definition(name).bounds.width * glyphScale
+
+        // Each note's glyph, the left of its first head, and the advance from one head to the next of a note written
+        // twice or thrice.
+        val glyphs = MutableList(notes.size) { GregorianGlyphName.PunctumQuadratum }
+        val lefts = MutableList(notes.size) { originX }
+        val advances = MutableList(notes.size) { 0f }
+        // The notes drawn with a virga's stem.
+        val virgae = mutableSetOf<Int>()
+
+        // The builder's place, and the note the next may be joined to.
+        var x = originX
+        var lastPitch: Int? = null
+        var lastAlignsRight = false
+        var lineIsHanging = false
+        var minX = originX
+
+        // Exsurge's neume line: from the upper note's centre to the lower's, and on past the lower for a stem that
+        // hangs, a clivis's or a porrectus's.
+        fun stem(stemX: Float, pitchA: Int, pitchB: Int, hanging: Boolean, eventId: String) {
+            val upper = max(pitchA, pitchB) - 6
+            var lower = min(pitchA, pitchB) - 6
+            var overhang = 0f
+            if (hanging) {
+                if (upper - lower > 4) lower = upper - 4
+                // From a note on a line a step above the next, within the staff, the stem reaches a step further.
+                if (upper - lower == 1 && abs(upper) % 2 == 1 && lower > -3) lower -= 1
+                overhang = GregorianGlyphCatalog.definition(GregorianGlyphName.PunctumQuadratum).bounds.height * glyphScale / 2.2f
+            }
+            result.strokes += GregorianPlacedStroke(
+                GregorianStrokeKind.Connector,
+                GregorianPoint(stemX + stemWidth / 2, noteY(upper + 6)),
+                GregorianPoint(stemX + stemWidth / 2, noteY(lower + 6) + overhang),
+                lineWidth = stemWidth,
+                eventId = eventId,
+            )
+        }
+
+        fun noteAt(index: Int, glyph: GregorianGlyphName, withLine: Boolean = true) {
+            val note = notes[index]
+            val alignsRight = GregorianGlyphCatalog.definition(glyph).alignment == GregorianGlyphAlignment.Right
+            val previous = lastPitch
+            if (withLine && previous != null && (lineIsHanging || lastAlignsRight || abs(previous - note.pitch) > 1)) {
+                val stemX = max(minX, x - stemWidth)
+                stem(stemX, previous, note.pitch, lineIsHanging, note.id)
+                if (!alignsRight) x = stemX
+            }
+            glyphs[index] = glyph
+            if (alignsRight && previous != null) {
+                lefts[index] = x - width(glyph)
+            } else {
+                lefts[index] = x
+                // A note written twice or thrice (`hss`) sets a head for each, a quarter staff space apart, an eighth
+                // after a stropha.
+                advances[index] = width(glyph) + if (note.shape == GregorianNoteShape.Stropha) intraNeumeSpacing / 2 else intraNeumeSpacing
+                x += width(glyph) + (note.repetitionCount - 1) * advances[index]
+            }
+            lastPitch = note.pitch
+            lastAlignsRight = alignsRight
+            lineIsHanging = false
+        }
+
+        fun virgaAt(index: Int) {
+            noteAt(index, GregorianGlyphName.PunctumQuadratum)
+            // The stem stands inside the head's right edge; a virga written twice or thrice (`hvv`) sets each head a
+            // quarter staff space after the last one's stem.
+            advances[index] = punctumWidth - stemWidth + intraNeumeSpacing
+            x = lefts[index] + (notes[index].repetitionCount - 1) * advances[index] + punctumWidth - stemWidth
+            virgae += index
+            lastPitch = notes[index].pitch
+            lastAlignsRight = false
+            lineIsHanging = false
+        }
+
+        fun advance(distance: Float) {
+            lastPitch = null
+            lineIsHanging = false
+            x += distance
+        }
+
+        // Starts a stem to hang on the left of the next note, down to `lower`, or joins the next note to the neume the
+        // GABC joins this one to.
+        fun lineFrom(lower: Int) {
+            val joined = context.joinedFrom
+            if (x == originX && joined != null) {
+                lastPitch = joined.pitch
+                lastAlignsRight = false
+                minX = originX - stemWidth
+            } else {
+                lastPitch = notes[lower].pitch
+                lastAlignsRight = false
+                lineIsHanging = true
+            }
+        }
+
+        // Ends a stem from the last note, inside its right edge, down to `index`'s.
+        fun lineEnding(index: Int) {
+            val previous = lastPitch ?: return
+            x -= stemWidth
+            stem(x, previous, notes[index].pitch, true, notes[index].id)
+            lastPitch = notes[index].pitch
+            lastAlignsRight = false
+        }
+
+        fun podatus(lower: Int, upper: Int) {
+            var lowerGlyph: GregorianGlyphName
+            val upperGlyph: GregorianGlyphName
+            when (notes[upper].liquescence) {
+                GregorianLiquescence.Small -> {
+                    lowerGlyph = GregorianGlyphName.BeginningAscLiquescent
+                    upperGlyph = GregorianGlyphName.TerminatingAscLiquescent
+                }
+                GregorianLiquescence.Ascending -> {
+                    lowerGlyph = GregorianGlyphName.PunctumQuadratum
+                    upperGlyph = GregorianGlyphName.PunctumQuadratumAscLiquescent
+                }
+                GregorianLiquescence.Descending -> {
+                    lowerGlyph = GregorianGlyphName.PunctumQuadratum
+                    upperGlyph = GregorianGlyphName.PunctumQuadratumDesLiquescent
+                }
+                GregorianLiquescence.None -> {
+                    val wide = notes[upper].pitch - notes[lower].pitch > 1
+                    lowerGlyph = if (wide) GregorianGlyphName.PodatusLower else GregorianGlyphName.PodatusLowerShort
+                    upperGlyph = if (wide) GregorianGlyphName.PodatusUpper else GregorianGlyphName.PodatusUpperShort
+                }
+            }
+            if (notes[lower].shape == GregorianNoteShape.Quilisma) lowerGlyph = GregorianGlyphName.Quilisma
+            noteAt(lower, lowerGlyph)
+            noteAt(upper, upperGlyph)
+            lastPitch = null
+        }
+
+        fun clivisUpper(upper: Int, lower: Int?, glyph: GregorianGlyphName = GregorianGlyphName.PunctumQuadratum) {
+            if (notes[upper].shape == GregorianNoteShape.Oriscus) {
+                noteAt(upper, GregorianGlyphName.OriscusDes, withLine = false)
+                return
+            }
+            var chosen = glyph
+            if (lower != null) {
+                lineFrom(lower)
+                lineIsHanging = notes[lower].pitch < notes[upper].pitch
+                if (notes[lower].liquescence == GregorianLiquescence.Small) chosen = GregorianGlyphName.BeginningDesLiquescent
+            }
+            noteAt(upper, chosen)
+        }
+
+        // The glyph of a note that ends a descent: a clivis's lower note, a torculus's last.
+        fun descentEnd(index: Int): GregorianGlyphName = when (notes[index].liquescence) {
+            GregorianLiquescence.Small -> GregorianGlyphName.TerminatingDesLiquescent
+            GregorianLiquescence.Ascending -> GregorianGlyphName.PunctumQuadratumAscLiquescent
+            GregorianLiquescence.Descending -> GregorianGlyphName.PunctumQuadratumDesLiquescent
+            GregorianLiquescence.None -> GregorianGlyphName.PunctumQuadratum
+        }
+
+        fun clivis(upper: Int, lower: Int) {
+            clivisUpper(upper, lower)
+            noteAt(lower, descentEnd(lower))
+            lastPitch = null
+        }
+
+        fun inclinata(start: Int) {
+            // Each diamond steps from the last by its interval, as Exsurge steps them: the advance of a diamond and a
+            // tenth for a unison, two thirds of one for each step.
+            val advance = width(GregorianGlyphName.PunctumInclinatum)
+            for (index in start until notes.size) {
+                if (index > start) {
+                    val steps = abs(notes[index - 1].pitch - notes[index].pitch)
+                    x += advance * if (steps == 0) 1.1f else steps * 2f / 3
+                }
+                glyphs[index] = if (notes[index].liquescence == GregorianLiquescence.Small) {
+                    GregorianGlyphName.PunctumInclinatumLiquescent
+                } else {
+                    GregorianGlyphName.PunctumInclinatum
+                }
+                lefts[index] = x
+            }
+            lastPitch = null
+        }
+
+        fun porrectusSwash(start: Int, end: Int) {
+            val previous = lastPitch
+            if (previous != null && (lineIsHanging || lastAlignsRight || abs(previous - notes[start].pitch) > 1)) {
+                x = max(minX, x - stemWidth)
+                stem(x, previous, notes[start].pitch, lineIsHanging, notes[start].id)
+            }
+            val swash = when ((notes[start].pitch - notes[end].pitch).coerceIn(1, 4)) {
+                1 -> GregorianGlyphName.Porrectus1
+                2 -> GregorianGlyphName.Porrectus2
+                3 -> GregorianGlyphName.Porrectus3
+                else -> GregorianGlyphName.Porrectus4
+            }
+            glyphs[start] = swash
+            lefts[start] = x
+            x += width(swash)
+            // The swash engraves the second note too, at its right end.
+            glyphs[end] = GregorianGlyphName.None
+            lefts[end] = x - punctumWidth
+            lastPitch = notes[end].pitch
+            lastAlignsRight = false
+            lineIsHanging = false
+        }
+
+        // A lone note's glyph, as Exsurge draws a punctum.
+        fun punctumGlyph(note: GregorianNote): GregorianGlyphName {
+            if (note.liquescence != GregorianLiquescence.None) {
+                return when {
+                    note.shape == GregorianNoteShape.Inclinatum -> GregorianGlyphName.PunctumInclinatumLiquescent
+                    note.shape == GregorianNoteShape.Oriscus -> GregorianGlyphName.OriscusLiquescent
+                    note.liquescence == GregorianLiquescence.Ascending -> GregorianGlyphName.PunctumQuadratumAscLiquescent
+                    note.liquescence == GregorianLiquescence.Descending -> GregorianGlyphName.PunctumQuadratumDesLiquescent
+                    else -> GregorianGlyphName.PunctumQuadratumLiquescent
+                }
+            }
+            if (note.isCavum) return GregorianGlyphName.PunctumCavum
+            return when (note.shape) {
+                GregorianNoteShape.Inclinatum -> GregorianGlyphName.PunctumInclinatum
+                GregorianNoteShape.Quilisma -> GregorianGlyphName.Quilisma
+                GregorianNoteShape.Oriscus -> GregorianGlyphName.OriscusDes
+                GregorianNoteShape.Stropha -> GregorianGlyphName.Stropha
+                else -> GregorianGlyphName.PunctumQuadratum
+            }
+        }
+
+        // A note of a stropha's form: a stropha only where the GABC writes one (`s`); a plain note repeated is a punctum.
+        fun strophaGlyph(note: GregorianNote): GregorianGlyphName {
+            if (note.shape == GregorianNoteShape.Stropha) return GregorianGlyphName.Stropha
+            return when (note.liquescence) {
+                GregorianLiquescence.Ascending -> GregorianGlyphName.PunctumQuadratumAscLiquescent
+                GregorianLiquescence.Descending -> GregorianGlyphName.PunctumQuadratumDesLiquescent
+                else -> if (note.isCavum) GregorianGlyphName.PunctumCavum else GregorianGlyphName.PunctumQuadratum
+            }
+        }
+
+        fun plainOrQuilisma(index: Int): GregorianGlyphName =
+            if (notes[index].shape == GregorianNoteShape.Quilisma) GregorianGlyphName.Quilisma else GregorianGlyphName.PunctumQuadratum
+
+        fun head(index: Int) {
+            if (notes[index].shape == GregorianNoteShape.Virga) virgaAt(index) else noteAt(index, plainOrQuilisma(index))
+        }
+
+        // Where the diamonds begin, if all the notes from there are diamonds.
+        val inclinataStart = notes.indices.firstOrNull { start ->
+            notes.subList(start, notes.size).all { it.shape == GregorianNoteShape.Inclinatum }
+        }
         val form = neume.form
-
-        // The gap between notes repeated on one pitch, as Exsurge sets it: a quarter staff space after a virga, an
-        // eighth after a stropha.
-        fun repeatGap(note: GregorianNote): Float = (if (note.shape == GregorianNoteShape.Stropha) 0.125f else 0.25f) * staffStep * 2
-        fun glyphWidth(name: GregorianGlyphName): Float = GregorianGlyphCatalog.definition(name).bounds.width * glyphScale
-        val stropharum = form == GregorianNeumeForm.Apostropha || form == GregorianNeumeForm.Distropha ||
-            form == GregorianNeumeForm.Tristropha
-
-        val noteOrigins: MutableList<Float> = when {
-            (form == GregorianNeumeForm.Podatus || form == GregorianNeumeForm.PesQuassus) && notes.size >= 2 ->
-                MutableList(notes.size) { index -> if (index >= 2) originX + punctumWidth * (index - 1) else originX }
-            form == GregorianNeumeForm.Climacus || form == GregorianNeumeForm.Ancus || form == GregorianNeumeForm.PunctaInclinata -> {
-                // Each diamond steps from the last by its interval, as Exsurge steps them; the first stands a quarter
-                // staff space clear of the note it falls from.
-                val inclinatum = glyphWidth(GregorianGlyphName.PunctumInclinatum)
-                val origins = mutableListOf<Float>()
-                var x = originX
-                for ((index, note) in notes.withIndex()) {
-                    if (index > 0) {
-                        val previous = notes[index - 1]
-                        x += if (previous.shape == GregorianNoteShape.Inclinatum) {
-                            val steps = abs(previous.pitch - note.pitch)
-                            inclinatum * (if (steps == 0) 1.1f else steps * 2f / 3)
-                        } else {
-                            glyphWidth(glyphName(previous)) + 0.25f * staffStep * 2
-                        }
-                    }
-                    origins += x
-                }
-                origins
+        val count = notes.size
+        when {
+            form == GregorianNeumeForm.PunctaInclinata -> inclinata(0)
+            (form == GregorianNeumeForm.Climacus || form == GregorianNeumeForm.Ancus) && inclinataStart == 1 -> {
+                head(0)
+                advance(intraNeumeSpacing)
+                inclinata(1)
             }
-            (form == GregorianNeumeForm.Porrectus || form == GregorianNeumeForm.PorrectusFlexus) && notes.size >= 3 -> {
-                val swashWidth = GregorianGlyphCatalog.definition(porrectusSwash(neume)).bounds.width * glyphScale
-                MutableList(notes.size) { index ->
-                    when (index) {
-                        0 -> originX
-                        1 -> originX + swashWidth - punctumWidth
-                        else -> originX + swashWidth + (index - 2) * punctumWidth * 0.92f
-                    }
-                }
+            form == GregorianNeumeForm.PesSubpunctis && inclinataStart == 2 -> {
+                podatus(0, 1)
+                advance(intraNeumeSpacing * 0.68f)
+                inclinata(2)
             }
-            form == GregorianNeumeForm.Bivirga || form == GregorianNeumeForm.Trivirga || stropharum -> {
-                // Notes repeated on one pitch stand a little apart.
-                val origins = mutableListOf<Float>()
-                var x = originX
+            form == GregorianNeumeForm.Virga || form == GregorianNeumeForm.Bivirga || form == GregorianNeumeForm.Trivirga -> {
                 for (index in notes.indices) {
-                    if (index > 0) {
-                        val previous = notes[index - 1]
-                        x += glyphWidth(if (stropharum) GregorianGlyphName.Stropha else glyphName(previous)) + repeatGap(previous)
-                    }
-                    origins += x
+                    if (index > 0) advance(intraNeumeSpacing)
+                    virgaAt(index)
                 }
-                origins
             }
-            else -> MutableList(notes.size) { originX + it * punctumWidth * 0.92f }
+            form == GregorianNeumeForm.Apostropha || form == GregorianNeumeForm.Distropha || form == GregorianNeumeForm.Tristropha -> {
+                val strophae = notes.take(2).count { it.shape == GregorianNoteShape.Stropha }
+                val gap = if (form == GregorianNeumeForm.Tristropha) {
+                    if (notes[0].shape == GregorianNoteShape.Stropha) intraNeumeSpacing / 2 else intraNeumeSpacing
+                } else {
+                    intraNeumeSpacing - strophae * intraNeumeSpacing / 4
+                }
+                for (index in notes.indices) {
+                    if (index > 0) advance(gap)
+                    noteAt(index, strophaGlyph(notes[index]))
+                }
+            }
+            form == GregorianNeumeForm.Oriscus && count == 1 -> {
+                val rises = context.next?.let { it.pitch > notes[0].pitch } ?: false
+                noteAt(
+                    0,
+                    when {
+                        notes[0].liquescence != GregorianLiquescence.None -> GregorianGlyphName.OriscusLiquescent
+                        rises -> GregorianGlyphName.OriscusAsc
+                        else -> GregorianGlyphName.OriscusDes
+                    },
+                )
+            }
+            form == GregorianNeumeForm.Clivis && count == 2 -> clivis(0, 1)
+            form == GregorianNeumeForm.Ancus && count == 3 -> {
+                clivisUpper(0, 1)
+                val middleGlyph = if (notes[2].liquescence == GregorianLiquescence.Small) {
+                    GregorianGlyphName.BeginningDesLiquescent
+                } else {
+                    GregorianGlyphName.PunctumQuadratum
+                }
+                clivisUpper(1, if (notes[0].pitch - notes[1].pitch > 1) 0 else null, middleGlyph)
+                noteAt(2, descentEnd(2))
+                lastPitch = null
+            }
+            form == GregorianNeumeForm.Podatus && count == 2 -> podatus(0, 1)
+            form == GregorianNeumeForm.PesQuassus && count == 2 -> {
+                noteAt(0, if (notes[0].shape == GregorianNoteShape.Oriscus) GregorianGlyphName.OriscusAsc else GregorianGlyphName.PunctumQuadratum)
+                if (notes[1].pitch - notes[0].pitch == 1) {
+                    virgaAt(1)
+                } else {
+                    noteAt(
+                        1,
+                        if (notes[1].liquescence == GregorianLiquescence.Descending) GregorianGlyphName.PunctumQuadratumDesLiquescent else GregorianGlyphName.PunctumQuadratum,
+                    )
+                    lineEnding(0)
+                }
+            }
+            form == GregorianNeumeForm.Porrectus && count == 3 -> {
+                lineFrom(1)
+                porrectusSwash(0, 1)
+                noteAt(
+                    2,
+                    when (notes[2].liquescence) {
+                        GregorianLiquescence.Small -> GregorianGlyphName.TerminatingAscLiquescent
+                        GregorianLiquescence.Descending -> GregorianGlyphName.PunctumQuadratumDesLiquescent
+                        else -> if (notes[2].pitch - notes[1].pitch > 1) GregorianGlyphName.PodatusUpper else GregorianGlyphName.PodatusUpperShort
+                    },
+                )
+            }
+            form == GregorianNeumeForm.PorrectusFlexus && count == 4 -> {
+                lineFrom(1)
+                porrectusSwash(0, 1)
+                noteAt(2, if (notes[3].liquescence == GregorianLiquescence.Small) GregorianGlyphName.PunctumQuadratumDesLiquescent else GregorianGlyphName.PunctumQuadratum)
+                noteAt(3, descentEnd(3))
+            }
+            form == GregorianNeumeForm.Torculus && count == 3 -> {
+                noteAt(0, plainOrQuilisma(0))
+                noteAt(1, GregorianGlyphName.PunctumQuadratum)
+                noteAt(2, descentEnd(2))
+            }
+            form == GregorianNeumeForm.TorculusResupinus && count == 4 -> {
+                noteAt(0, plainOrQuilisma(0))
+                porrectusSwash(1, 2)
+                noteAt(
+                    3,
+                    when {
+                        notes[3].liquescence == GregorianLiquescence.Small -> GregorianGlyphName.TerminatingAscLiquescent
+                        notes[2].liquescence == GregorianLiquescence.Descending -> GregorianGlyphName.PunctumQuadratumDesLiquescent
+                        else -> GregorianGlyphName.PodatusUpper
+                    },
+                )
+            }
+            form == GregorianNeumeForm.TorculusResupinusFlexus && count == 5 -> {
+                noteAt(0, plainOrQuilisma(0))
+                porrectusSwash(1, 2)
+                noteAt(3, if (notes[4].liquescence == GregorianLiquescence.Small) GregorianGlyphName.PunctumQuadratumDesLiquescent else GregorianGlyphName.PunctumQuadratum)
+                noteAt(4, descentEnd(4))
+            }
+            form == GregorianNeumeForm.Scandicus && count == 3 -> {
+                if (notes[2].shape == GregorianNoteShape.Virga) {
+                    podatus(0, 1)
+                    virgaAt(2)
+                } else {
+                    noteAt(0, plainOrQuilisma(0))
+                    podatus(1, 2)
+                }
+            }
+            form == GregorianNeumeForm.ScandicusFlexus && count == 4 -> {
+                if (notes[2].shape == GregorianNoteShape.Virga) {
+                    podatus(0, 1)
+                    advance(intraNeumeSpacing)
+                    clivis(2, 3)
+                } else {
+                    noteAt(0, GregorianGlyphName.PunctumQuadratum)
+                    podatus(1, 2)
+                    advance(intraNeumeSpacing)
+                    noteAt(
+                        3,
+                        when (notes[3].liquescence) {
+                            GregorianLiquescence.Ascending -> GregorianGlyphName.PunctumQuadratumAscLiquescent
+                            GregorianLiquescence.Descending -> GregorianGlyphName.PunctumQuadratumDesLiquescent
+                            else -> GregorianGlyphName.PunctumQuadratum
+                        },
+                    )
+                }
+            }
+            form == GregorianNeumeForm.Salicus && count == 3 -> {
+                noteAt(0, GregorianGlyphName.PunctumQuadratum)
+                advance(intraNeumeSpacing)
+                noteAt(1, GregorianGlyphName.OriscusAsc)
+                when (notes[2].liquescence) {
+                    GregorianLiquescence.Small -> noteAt(2, GregorianGlyphName.TerminatingAscLiquescent)
+                    GregorianLiquescence.Ascending -> noteAt(2, GregorianGlyphName.PunctumQuadratumAscLiquescent)
+                    GregorianLiquescence.Descending -> noteAt(2, GregorianGlyphName.PunctumQuadratumDesLiquescent)
+                    GregorianLiquescence.None -> virgaAt(2)
+                }
+            }
+            form == GregorianNeumeForm.SalicusFlexus && count == 4 -> {
+                noteAt(0, GregorianGlyphName.PunctumQuadratum)
+                advance(intraNeumeSpacing)
+                noteAt(1, GregorianGlyphName.OriscusAsc)
+                noteAt(2, if (notes[3].liquescence == GregorianLiquescence.Small) GregorianGlyphName.PunctumQuadratumDesLiquescent else GregorianGlyphName.PunctumQuadratum)
+                noteAt(3, descentEnd(3))
+            }
+            else -> {
+                // A note alone, or a run the forms above do not name: its notes one after another, joined where they
+                // leap.
+                for (index in notes.indices) {
+                    if (notes[index].shape == GregorianNoteShape.Virga) virgaAt(index) else noteAt(index, punctumGlyph(notes[index]))
+                }
+            }
         }
-        // A note written twice or thrice (`hvv`, `hsss`) draws a glyph for each, a repeated note's gap apart, and
-        // moves the notes after it along by as much.
-        var shift = 0f
-        for ((index, note) in notes.withIndex()) {
-            noteOrigins[index] += shift
-            val glyph = if (stropharum) GregorianGlyphName.Stropha else glyphName(note)
-            shift += (note.repetitionCount - 1) * (glyphWidth(glyph) + repeatGap(note))
-        }
-        val isPorrectus = form == GregorianNeumeForm.Porrectus || form == GregorianNeumeForm.PorrectusFlexus
 
+        // The head each note's signs are set by, the last of a note written twice or thrice; null for a custos.
+        val signFrames = arrayOfNulls<GregorianRect>(notes.size)
         for ((index, note) in notes.withIndex()) {
-            val y = staffCenter - (note.pitch - 6) * staffStep
-            val noteOriginX = noteOrigins[index]
+            val y = noteY(note.pitch)
+            val glyph = glyphs[index]
             // Where the note's head is, whatever glyph engraves it.
-            val headFrame = GregorianRect.of(noteOriginX, y - punctumWidth / 2, punctumWidth, punctumWidth)
+            val headFrame = GregorianRect.of(lefts[index], y - punctumWidth / 2, punctumWidth, punctumWidth)
             if (note.isCustos) {
                 // Drawn as the custos that ends a staff is drawn: without signs, and not as a note that the cantor
                 // guide may light.
                 val custos = placedGlyph(
                     GregorianGlyphKind.Custos,
-                    GregorianPoint(noteOriginX + GregorianGlyphCatalog.definition(GregorianGlyphName.CustosShort).origin.x * glyphScale, y),
+                    GregorianPoint(lefts[index] + GregorianGlyphCatalog.definition(GregorianGlyphName.CustosShort).origin.x * glyphScale, y),
                     glyphScale,
                 )
                 result.glyphs += custos
                 appendEvent(note, neume, custos.frame, lineIndex, result)
                 continue
             }
-            var glyphName = glyphName(note)
-            if (note.shape == GregorianNoteShape.Oriscus && note.liquescence == GregorianLiquescence.None && index + 1 < notes.size) {
-                glyphName = if (notes[index + 1].pitch < note.pitch) GregorianGlyphName.OriscusDes else GregorianGlyphName.OriscusAsc
-            }
-
-            if (form == GregorianNeumeForm.Apostropha || form == GregorianNeumeForm.Distropha || form == GregorianNeumeForm.Tristropha) {
-                glyphName = GregorianGlyphName.Stropha
-            } else if (form == GregorianNeumeForm.PesQuassus && notes.size >= 2) {
-                glyphName = when (index) {
-                    0 -> GregorianGlyphName.OriscusAsc
-                    1 -> GregorianGlyphName.PodatusUpper
-                    else -> glyphName
-                }
-            } else if (form == GregorianNeumeForm.Podatus && notes.size >= 2) {
-                glyphName = when (index) {
-                    0 -> GregorianGlyphName.PodatusLower
-                    1 -> GregorianGlyphName.PodatusUpper
-                    else -> glyphName
-                }
-            } else if (isPorrectus && index == 0) {
-                glyphName = porrectusSwash(neume)
-            } else if (isPorrectus && index == 1) {
-                // The porrectus swash already engraves the first two notes.
+            if (glyph == GregorianGlyphName.None) {
+                // The second note of a porrectus, which its swash engraves.
+                signFrames[index] = headFrame
                 appendLedgerLines(headFrame, y, staffTop, staffBottom, staffStep * 2, notationScale, note.id, result.strokes)
                 appendEvent(note, neume, headFrame, lineIndex, result)
                 continue
             }
+            val isSwash = glyph in SWASHES
 
-            val definition = GregorianGlyphCatalog.definition(glyphName)
-            val anchorX = noteOriginX + definition.origin.x * glyphScale
-            val first = placedGlyph(GregorianGlyphKind.Catalog(glyphName), GregorianPoint(anchorX, y), glyphScale, note.id)
+            val definition = GregorianGlyphCatalog.definition(glyph)
+            val first = placedGlyph(
+                GregorianGlyphKind.Catalog(glyph),
+                GregorianPoint(lefts[index] + definition.origin.x * glyphScale, y),
+                glyphScale,
+                note.id,
+            )
             // The same glyph again for each further time the note is written.
-            val repetitions = (1 until max(1, note.repetitionCount)).map { repetition ->
-                GregorianPlacedGlyph(first.kind, first.frame.translate(repetition * (first.frame.width + repeatGap(note)), 0f), note.id)
+            val heads = listOf(first) + (1 until max(1, note.repetitionCount)).map { repetition ->
+                GregorianPlacedGlyph(first.kind, first.frame.translate(repetition * advances[index], 0f), note.id)
             }
             // Signs written after a repeated note belong to the last of them.
-            val placed = repetitions.lastOrNull() ?: first
-            val noteFrame = repetitions.fold(first.frame) { frame, repetition -> frame.union(repetition.frame) }
+            val placed = heads.last()
+            var noteFrame = heads.fold(first.frame) { frame, head -> frame.union(head.frame) }
+            if (index in virgae) {
+                // A virga's stem falls nearly two steps from a note in a space, nearly three from one on a line.
+                val length = (if (abs(note.pitch - 6) % 2 == 0) 1.8f else 2.7f) * staffStep
+                for (head in heads) {
+                    val stemX = head.frame.left + punctumWidth - stemWidth / 2
+                    result.strokes += GregorianPlacedStroke(
+                        GregorianStrokeKind.Connector,
+                        GregorianPoint(stemX, y),
+                        GregorianPoint(stemX, y + length),
+                        lineWidth = stemWidth,
+                        eventId = note.id,
+                    )
+                    noteFrame = noteFrame.union(GregorianRect.of(stemX - stemWidth / 2, y, stemWidth, length))
+                }
+            }
 
             note.accidental?.let { accidental ->
                 val kind = accidentalKind(accidental)
@@ -1313,93 +1688,266 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                 result.ink(accidentalGlyph.frame)
             }
 
-            if (index > 0 && form !in CONNECTED_FORMS) {
-                val previous = notes[index - 1]
-                if (previous.pitch != note.pitch) {
-                    val previousY = staffCenter - (previous.pitch - 6) * staffStep
-                    val connectorX = noteOriginX + 0.7f * glyphScale
-                    result.strokes += GregorianPlacedStroke(
-                        GregorianStrokeKind.Connector,
-                        GregorianPoint(connectorX, previousY),
-                        GregorianPoint(connectorX, y),
-                        lineWidth = max(1f, 18 * glyphScale),
-                        eventId = note.id,
-                    )
+            result.glyphs += heads
+            result.ink(noteFrame)
+            signFrames[index] = placed.frame
+
+            // A swash's first head; any other glyph's whole frame.
+            appendLedgerLines(if (isSwash) headFrame else noteFrame, y, staffTop, staffBottom, staffStep * 2, notationScale, note.id, result.strokes)
+            appendEvent(note, neume, noteFrame, lineIndex, result)
+        }
+
+        appendSigns(neume, signFrames, glyphs, staffCenter, staffStep, glyphScale, notationScale, result)
+        return result
+    }
+
+    /**
+     * Sets a neume's dots, episemata and ictus as Exsurge places them, the dot at the Liber's size: on the side the GABC
+     * writes, or else on the side the neume gives each note. A dot stands just after its note, in its space, or in the
+     * space above a note on a line; a double dot after a neume's last two notes gives each its own. An episema keeps
+     * clear of its note and of the staff's lines, and runs on over the next note's on the same side. An ictus stands a
+     * step beyond its note, off the line there.
+     */
+    private fun appendSigns(
+        neume: GregorianNeume,
+        frames: Array<GregorianRect?>,
+        glyphs: List<GregorianGlyphName>,
+        staffCenter: Float,
+        staffStep: Float,
+        glyphScale: Float,
+        notationScale: Float,
+        result: Composition,
+    ) {
+        val notes = neume.notes
+        fun noteY(pitch: Int): Float = staffCenter - (pitch - 6) * staffStep
+        fun onLine(note: GregorianNote): Boolean = abs(note.pitch - 6) % 2 == 1
+        val form = neume.form
+
+        // Dots. A double dot on a neume's last note dots the note before it too, set after the last.
+        val dots = notes.map { it.moraCount }.toMutableList()
+        val dotAfterNext = MutableList(notes.size) { false }
+        val last = notes.lastIndex
+        if (last > 0 && notes[last].moraCount > 1) {
+            dots[last] -= 1
+            dots[last - 1] += 1
+            dotAfterNext[last - 1] = true
+        }
+        val dotSides = notes.map { it.moraPosition }.toMutableList()
+        fun lowerDot(index: Int) {
+            if (dotSides[index] == null && dots[index] > 0) dotSides[index] = GregorianEpisemaPosition.Below
+        }
+        when (form) {
+            // The lower note of a pes, on a line, has its dot below it.
+            GregorianNeumeForm.Podatus, GregorianNeumeForm.PesQuassus, GregorianNeumeForm.PesSubpunctis ->
+                if (notes.size > 1 && onLine(notes[0])) lowerDot(0)
+            // A clivis's lower note, on a line a step down, has its dot below it.
+            GregorianNeumeForm.Clivis, GregorianNeumeForm.Torculus, GregorianNeumeForm.Porrectus -> {
+                val upper = if (form == GregorianNeumeForm.Clivis) 0 else 1
+                val lower = upper + 1
+                if (notes.size > lower && notes[upper].pitch - notes[lower].pitch == 1 && onLine(notes[lower])) lowerDot(lower)
+            }
+            else -> Unit
+        }
+        if ((form == GregorianNeumeForm.Climacus || form == GregorianNeumeForm.PunctaInclinata || form == GregorianNeumeForm.PesSubpunctis) &&
+            notes.size > 1
+        ) {
+            // So has the last diamond, on a line a step below the one before.
+            if (notes[last - 1].pitch - notes[last].pitch == 1 && onLine(notes[last])) lowerDot(last)
+        }
+        val dotDefinition = GregorianGlyphCatalog.definition(GregorianGlyphName.Mora)
+        // The Liber's dot: a third of a staff space across, a tenth of one after its note.
+        val dotScale = 0.33f * staffStep * 2 / dotDefinition.bounds.width
+        val dotWidth = dotDefinition.bounds.width * dotScale
+        val dotGap = 0.1f * staffStep * 2
+        for ((index, note) in notes.withIndex()) {
+            if (dots[index] <= 0) continue
+            val frame = frames[index] ?: continue
+            var y = noteY(note.pitch)
+            when (dotSides[index]) {
+                GregorianEpisemaPosition.Above -> y -= (if (onLine(note)) 0.75f else 1.75f) * staffStep
+                GregorianEpisemaPosition.Below -> y += (if (onLine(note)) 0.75f else 1.75f) * staffStep
+                null -> if (onLine(note)) {
+                    y -= 0.75f * staffStep
+                } else if (index + 1 < notes.size && notes[index + 1].pitch == note.pitch - 1) {
+                    y -= 0.25f * staffStep
                 }
             }
-
-            result.glyphs += first
-            result.glyphs += repetitions
-            result.ink(noteFrame)
-
-            for (moraIndex in 0 until note.moraCount) {
+            var left = frame.right + dotGap
+            val next = frames.getOrNull(index + 1)
+            if (next != null) {
+                if (dotAfterNext[index]) {
+                    left = next.right + dotGap
+                } else if (next.right > frame.right) {
+                    // Between the note and the end of the next.
+                    left = frame.right + (next.right - frame.right - dotWidth) / 2
+                }
+            }
+            for (dot in 0 until dots[index]) {
                 val mora = placedGlyph(
                     GregorianGlyphKind.Mora,
-                    GregorianPoint(placed.frame.right + (5 + moraIndex * 3.5f) * notationScale, y),
-                    glyphScale * 0.72f,
+                    GregorianPoint(left + dot * (dotWidth + dotGap) + dotDefinition.origin.x * dotScale, y),
+                    dotScale,
                     note.id,
                 )
                 result.glyphs += mora
                 result.ink(mora.frame)
             }
-            if (note.hasEpisema) {
-                val above = note.episemaPosition == GregorianEpisemaPosition.Above
-                val episemaY = if (above) placed.frame.top - 3 * notationScale else placed.frame.bottom + 3 * notationScale
-                result.strokes += GregorianPlacedStroke(
-                    GregorianStrokeKind.Episema,
-                    GregorianPoint(placed.frame.left - notationScale, episemaY),
-                    GregorianPoint(placed.frame.right + notationScale, episemaY),
-                    lineWidth = max(1f, 1.3f * notationScale),
-                    eventId = note.id,
-                )
-            }
-            if (note.hasIctus) {
-                val above = note.episemaPosition == GregorianEpisemaPosition.Above
-                val ictusName = if (above) GregorianGlyphName.VerticalEpisemaAbove else GregorianGlyphName.VerticalEpisemaBelow
-                val ictus = placedGlyph(
-                    GregorianGlyphKind.Catalog(ictusName),
-                    GregorianPoint(
-                        placed.frame.center.x,
-                        if (above) placed.frame.top - 2 * notationScale else placed.frame.bottom + 2 * notationScale,
-                    ),
-                    glyphScale,
-                    note.id,
-                )
-                result.glyphs += ictus
-                result.ink(ictus.frame)
-            }
-
-            // The swash's first head; any other glyph's whole frame.
-            val ledgerFrame = if (isPorrectus && index == 0) headFrame else noteFrame
-            appendLedgerLines(ledgerFrame, y, staffTop, staffBottom, staffStep * 2, notationScale, note.id, result.strokes)
-            appendEvent(note, neume, noteFrame, lineIndex, result)
         }
-        return result
-    }
 
-    private fun glyphName(note: GregorianNote): GregorianGlyphName {
-        if (note.isCavum) return GregorianGlyphName.PunctumCavum
-        return when (note.shape) {
-            GregorianNoteShape.Punctum -> when (note.liquescence) {
-                GregorianLiquescence.Ascending -> GregorianGlyphName.PunctumQuadratumAscLiquescent
-                GregorianLiquescence.Descending -> GregorianGlyphName.PunctumQuadratumDesLiquescent
-                GregorianLiquescence.Small -> GregorianGlyphName.PunctumQuadratumLiquescent
-                GregorianLiquescence.None -> GregorianGlyphName.PunctumQuadratum
+        // Episemata, on the side the neume gives each note unless the GABC writes one.
+        val episemaSides = notes.map { it.episemaPosition }.toMutableList()
+        fun side(index: Int, position: GregorianEpisemaPosition) {
+            if (index < notes.size && episemaSides[index] == null) episemaSides[index] = position
+        }
+        fun clivisSides(upper: Int, lower: Int): Boolean {
+            side(upper, GregorianEpisemaPosition.Above)
+            val hasTop = upper < notes.size && notes[upper].hasEpisema
+            side(lower, if (hasTop) GregorianEpisemaPosition.Above else GregorianEpisemaPosition.Below)
+            return hasTop
+        }
+        fun podatusSides(lower: Int, upper: Int) {
+            side(lower, GregorianEpisemaPosition.Below)
+            side(upper, GregorianEpisemaPosition.Above)
+        }
+        when (form) {
+            GregorianNeumeForm.Clivis -> clivisSides(0, 1)
+            GregorianNeumeForm.Ancus -> {
+                clivisSides(0, 2)
+                clivisSides(1, 2)
             }
-            GregorianNoteShape.Virga -> GregorianGlyphName.VirgaShort
-            GregorianNoteShape.Quilisma -> GregorianGlyphName.Quilisma
-            GregorianNoteShape.Liquescent ->
-                if (note.liquescence == GregorianLiquescence.Ascending) {
-                    GregorianGlyphName.TerminatingAscLiquescent
+            GregorianNeumeForm.Podatus, GregorianNeumeForm.PesQuassus, GregorianNeumeForm.PesSubpunctis -> podatusSides(0, 1)
+            GregorianNeumeForm.Porrectus -> {
+                clivisSides(0, 1)
+                podatusSides(1, 2)
+            }
+            GregorianNeumeForm.PorrectusFlexus -> {
+                side(0, GregorianEpisemaPosition.Above)
+                val hasTop = clivisSides(2, 3) || notes[0].hasEpisema
+                side(1, if (hasTop) GregorianEpisemaPosition.Above else GregorianEpisemaPosition.Below)
+            }
+            GregorianNeumeForm.Torculus -> {
+                val hasTop = clivisSides(1, 2)
+                side(0, if (hasTop) GregorianEpisemaPosition.Above else GregorianEpisemaPosition.Below)
+            }
+            GregorianNeumeForm.TorculusResupinus, GregorianNeumeForm.TorculusResupinusFlexus -> {
+                clivisSides(1, 2)
+                podatusSides(2, 3)
+                clivisSides(1, 0)
+            }
+            GregorianNeumeForm.Scandicus, GregorianNeumeForm.ScandicusFlexus ->
+                if (form == GregorianNeumeForm.Scandicus && notes.size > 2 && notes[2].shape == GregorianNoteShape.Virga) {
+                    podatusSides(0, 1)
                 } else {
-                    GregorianGlyphName.TerminatingDesLiquescent
+                    side(0, GregorianEpisemaPosition.Below)
+                    podatusSides(1, 2)
                 }
-            GregorianNoteShape.Inclinatum ->
-                if (note.liquescence == GregorianLiquescence.None) GregorianGlyphName.PunctumInclinatum else GregorianGlyphName.PunctumInclinatumLiquescent
-            GregorianNoteShape.Oriscus ->
-                if (note.liquescence == GregorianLiquescence.None) GregorianGlyphName.OriscusAsc else GregorianGlyphName.OriscusLiquescent
-            GregorianNoteShape.Stropha -> GregorianGlyphName.Stropha
-            GregorianNoteShape.Custos -> GregorianGlyphName.CustosShort
+            GregorianNeumeForm.Salicus, GregorianNeumeForm.SalicusFlexus ->
+                for (index in notes.indices) side(index, GregorianEpisemaPosition.Below)
+            else -> Unit
+        }
+        val episemaWeight = max(1f, 1.3f * notationScale)
+        val staffLines = 4
+        class Run(val side: GregorianEpisemaPosition, var y: Float, val left: Float, var right: Float, val eventId: String)
+        val runs = mutableListOf<Run>()
+        for ((index, note) in notes.withIndex()) {
+            if (!note.hasEpisema) continue
+            val frame = frames[index] ?: continue
+            val position = episemaSides[index] ?: GregorianEpisemaPosition.Above
+            // Exsurge's place: a quarter step clear of the note, centred between it and the next line if there is
+            // room, else in the nearest third of a space off the line.
+            val clearance = staffStep * 0.25f
+            var step: Float
+            if (position == GregorianEpisemaPosition.Below) {
+                var y = frame.bottom + clearance - staffCenter
+                if (glyphs[index] == GregorianGlyphName.None) y += staffStep / 2
+                step = ceil(y / staffStep)
+                if (abs(step % 2) == 0f) {
+                    step = (step + 3f / 4 + (y - clearance) / staffStep) / 2
+                } else {
+                    step = (ceil(1.5f * y / staffStep - 0.5f) * 2 + 1) / 3
+                    if (abs(step) % 2 == 1f) step += if (abs(step) < staffLines) 2f / 3 else 1f / 3
+                }
+            } else {
+                val y = frame.top - clearance - staffCenter
+                step = floor(y / staffStep)
+                if (abs(step % 2) == 0f) {
+                    step = (step - 3f / 4 + (y + clearance) / staffStep) / 2
+                } else {
+                    step = (floor(1.5f * y / staffStep - 0.5f) * 2 + 1) / 3
+                    if (abs(step) % 2 == 1f) step -= if (abs(step) < staffLines) 2f / 3 else 1f / 3
+                }
+            }
+            var left = frame.left
+            var width = frame.width
+            when {
+                glyphs[index] in SWASHES -> width = staffStep
+                glyphs[index] == GregorianGlyphName.None -> {
+                    width = staffStep
+                    left = frame.right - width
+                }
+                glyphs[index] == GregorianGlyphName.PunctumInclinatum && index > 0 &&
+                    glyphs[index - 1] == GregorianGlyphName.PunctumInclinatum && notes[index - 1].pitch - note.pitch == 1 -> {
+                    width *= 2f / 3
+                    left += 0.5f * width
+                }
+                glyphs[index] == GregorianGlyphName.PunctumInclinatumLiquescent -> {
+                    width *= 2f / 3
+                    left += 0.25f * width
+                }
+            }
+            val y = staffCenter + step * staffStep
+            // An episema runs on over the next note's on the same side, at the height that clears both.
+            val previous = runs.lastOrNull()
+            if (previous != null && previous.side == position && left - previous.right < staffStep) {
+                previous.y = if (position == GregorianEpisemaPosition.Above) min(previous.y, y) else max(previous.y, y)
+                previous.right = left + width
+            } else {
+                runs += Run(position, y, left, left + width, note.id)
+            }
+        }
+        for (run in runs) {
+            result.strokes += GregorianPlacedStroke(
+                GregorianStrokeKind.Episema,
+                GregorianPoint(run.left, run.y),
+                GregorianPoint(run.right, run.y),
+                lineWidth = episemaWeight,
+                eventId = run.eventId,
+            )
+        }
+
+        // The ictus: above a virga, the top of a rise and the head of a fall, and below any other note, unless the
+        // GABC writes its side.
+        for ((index, note) in notes.withIndex()) {
+            if (!note.hasIctus) continue
+            val frame = frames[index] ?: continue
+            val above = when {
+                note.ictusPosition != null -> note.ictusPosition == GregorianEpisemaPosition.Above
+                note.shape == GregorianNoteShape.Virga -> true
+                note.shape != GregorianNoteShape.Inclinatum && index + 1 < notes.size -> notes[index + 1].pitch < note.pitch
+                else -> index > 0 && index == notes.lastIndex && notes[index - 1].pitch < note.pitch
+            }
+            val position = note.pitch - 6 + if (above) 1 else -1
+            // Off a staff line, or nearer if the space is free; further from an episema on the same side.
+            val onStaffLine = abs(position) % 2 == 1 && abs(position) < staffLines
+            val episemaBeside = note.hasEpisema &&
+                (episemaSides[index] ?: GregorianEpisemaPosition.Above) == (if (above) GregorianEpisemaPosition.Above else GregorianEpisemaPosition.Below)
+            var extra = 0f
+            if (note.shape == GregorianNoteShape.Inclinatum && !onStaffLine && !episemaBeside) extra = 0.3f
+            if (episemaBeside) extra = 0.4f
+            val offset = staffStep * (extra + if (onStaffLine) 0.3f else -0.2f) * if (above) -1 else 1
+            val centerX = when {
+                glyphs[index] in SWASHES -> frame.left + staffStep / 2
+                glyphs[index] == GregorianGlyphName.None -> frame.right - staffStep / 2
+                else -> frame.center.x
+            }
+            val ictus = placedGlyph(
+                GregorianGlyphKind.Catalog(if (above) GregorianGlyphName.VerticalEpisemaAbove else GregorianGlyphName.VerticalEpisemaBelow),
+                GregorianPoint(centerX, noteY(position + 6) + offset),
+                glyphScale,
+                note.id,
+            )
+            result.glyphs += ictus
+            result.ink(ictus.frame)
         }
     }
 
@@ -1446,7 +1994,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             GregorianDivision.Minor -> staffGap * 2
             GregorianDivision.Major, GregorianDivision.Final -> staffGap * 3
         }
-        val top = if (division == GregorianDivision.Minima) staffTop + staffGap else staffTop + (staffGap * 3 - height) / 2
+        // A quarter bar crosses the top line, as the Liber draws it.
+        val top = if (division == GregorianDivision.Minima) staffTop - staffGap / 2 else staffTop + (staffGap * 3 - height) / 2
         val count = if (division == GregorianDivision.Final) 2 else 1
         for (index in 0 until count) {
             val barX = x + index * 4 * notationScale
@@ -1604,11 +2153,12 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         /** A gap between two syllables no wider than this is read as none. */
         private const val TOUCHING = 0.25f
 
-        private val CONNECTED_FORMS = setOf(
-            GregorianNeumeForm.Podatus,
-            GregorianNeumeForm.PesQuassus,
-            GregorianNeumeForm.Porrectus,
-            GregorianNeumeForm.PorrectusFlexus,
+        /** The obliques of the porrectus, by the interval of their two notes. */
+        private val SWASHES = setOf(
+            GregorianGlyphName.Porrectus1,
+            GregorianGlyphName.Porrectus2,
+            GregorianGlyphName.Porrectus3,
+            GregorianGlyphName.Porrectus4,
         )
 
         /**

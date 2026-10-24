@@ -116,8 +116,9 @@ final class GregorianLayoutTests: XCTestCase {
         let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390)
         let names = layout.glyphs.map(\.kind.catalogName)
 
-        XCTAssertTrue(names.contains(.podatusLower))
-        XCTAssertTrue(names.contains(.podatusUpper))
+        // A pes of a second takes Exsurge's short halves.
+        XCTAssertTrue(names.contains(.podatusLowerShort))
+        XCTAssertTrue(names.contains(.podatusUpperShort))
         XCTAssertTrue(names.contains(.porrectus1))
     }
 
@@ -944,17 +945,21 @@ final class GregorianLayoutTests: XCTestCase {
             timeline: GregorianEventTimeline(events: events)
         )
         let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390)
-        // Repeated notes stand apart, as Exsurge sets them: a quarter staff
-        // space after a virga, an eighth after a stropha.
+        // Repeated notes stand apart, as Exsurge sets them: a virga's head a
+        // quarter staff space after the last one's stem, which stands inside
+        // its head; a stropha an eighth of one after the last.
         let staffSpace = 200 * (1.0 / 16)
-        let gaps: [GregorianGlyphName: CGFloat] = [.virgaShort: 0.25 * staffSpace, .stropha: 0.125 * staffSpace]
+        let stemWidth = 18.0 / 16
+        let gaps: [GregorianGlyphName: CGFloat] = [
+            .punctumQuadratum: 0.25 * staffSpace - stemWidth, .stropha: 0.125 * staffSpace
+        ]
 
         XCTAssertEqual(layout.events.map(\.eventID), score.eventIDs)
         XCTAssertEqual(layout.neumes.map(\.eventIDs.count), [1, 1, 1, 1])
         XCTAssertEqual(layout.neumes.map(\.noteCount), [2, 3, 2, 1])
 
         let expected: [(GregorianGlyphName, Int)] = [
-            (.virgaShort, 2), (.stropha, 3), (.stropha, 2), (.punctumQuadratum, 1)
+            (.punctumQuadratum, 2), (.stropha, 3), (.stropha, 2), (.punctumQuadratum, 1)
         ]
         for (index, (name, count)) in expected.enumerated() {
             let eventID = score.eventIDs[index]
@@ -970,6 +975,15 @@ final class GregorianLayoutTests: XCTestCase {
                 )
                 XCTAssertEqual(next.frame.minY, previous.frame.minY, accuracy: 0.001)
                 XCTAssertEqual(next.frame.size, previous.frame.size)
+            }
+            // Each head of a virga has its stem, inside its right edge.
+            if index == 0 {
+                let stems = layout.strokes.filter { $0.eventID == eventID && $0.kind == .connector }
+                XCTAssertEqual(stems.count, 2)
+                for (head, stem) in zip(notes, stems.sorted { $0.start.x < $1.start.x }) {
+                    XCTAssertEqual(stem.start.x, head.frame.maxX - stemWidth / 2, accuracy: 0.001)
+                    XCTAssertGreaterThan(stem.end.y, head.frame.maxY)
+                }
             }
             // The event answers to all of them together.
             let placement = try XCTUnwrap(layout.events.first { $0.eventID == eventID })
@@ -1016,11 +1030,12 @@ final class GregorianLayoutTests: XCTestCase {
             )
         )
         let engine = GregorianEngravingLayoutEngine()
+        let virgaEvents: Set<String?> = ["event-0", "event-1"]
         let writtenOutVirgae = engine.layout(score: writtenOut, width: 390).glyphs
-            .filter { $0.kind == .catalog(.virgaShort) }
+            .filter { $0.kind == .catalog(.punctumQuadratum) && virgaEvents.contains($0.eventID) }
             .map(\.frame)
         let abbreviatedVirgae = engine.layout(score: abbreviated, width: 390).glyphs
-            .filter { $0.kind == .catalog(.virgaShort) }
+            .filter { $0.kind == .catalog(.punctumQuadratum) && $0.eventID == "event-0" }
             .map(\.frame)
         XCTAssertEqual(writtenOutVirgae.count, 2)
         XCTAssertEqual(abbreviatedVirgae.count, 2)
