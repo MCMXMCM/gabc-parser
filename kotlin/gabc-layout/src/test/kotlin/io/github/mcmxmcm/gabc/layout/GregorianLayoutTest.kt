@@ -957,8 +957,10 @@ class GregorianLayoutTest {
             GregorianEventTimeline(events),
         )
         val layout = GregorianEngravingLayoutEngine().layout(score, width = 390f)
-        val glyphScale = 1f / 16
-        val advance = 100 * glyphScale * 0.92f
+        // Repeated notes stand apart, as Exsurge sets them: a quarter staff space after a virga, an eighth after a
+        // stropha.
+        val staffSpace = 200 * (1f / 16)
+        val gaps = mapOf(GregorianGlyphName.VirgaShort to 0.25f * staffSpace, GregorianGlyphName.Stropha to 0.125f * staffSpace)
 
         assertEquals(score.eventIds, layout.events.map { it.eventId })
         assertEquals(listOf(1, 1, 1, 1), layout.neumes.map { it.eventIds.size })
@@ -978,7 +980,7 @@ class GregorianLayoutTest {
                 .sortedBy { it.frame.left }
             assertEquals(eventId, count, notes.size)
             for ((previous, next) in notes.zip(notes.drop(1))) {
-                assertEquals(advance, next.frame.left - previous.frame.left, 0.001f)
+                assertEquals(gaps[name] ?: 0f, next.frame.left - previous.frame.right, 0.001f)
                 assertEquals(previous.frame.top, next.frame.top, 0.001f)
                 assertEquals(previous.frame.size, next.frame.size)
             }

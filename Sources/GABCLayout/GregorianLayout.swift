@@ -278,9 +278,6 @@ public struct GregorianLayout: Sendable {
 /// semantic units, intrinsic measurement/line breaking, then positioned ink.
 public struct GregorianEngravingLayoutEngine: Sendable {
     private static let lyricLineHeightMultiplier: CGFloat = 1.23
-    /// The advance, in punctum widths, from one note to the next on the same
-    /// pitch: the spacing of a bivirga or a tristropha.
-    private static let repeatedNoteAdvance: CGFloat = 0.92
 
     public init() {}
 
@@ -401,11 +398,13 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         )
         let lines = lineRanges.map { Array(units[$0]) }
         let placements = lineRanges.enumerated().map { lineIndex, range in
-            placeFitting(
+            placeLine(
                 units[range],
                 frame: lineFrame(lineIndex),
                 spacing: spacing,
-                endsWithinWord: wordContinues[range.upperBound]
+                endsWithinWord: wordContinues[range.upperBound],
+                endsParagraph: range.isEmpty || range.upperBound == units.count
+                    || units[range.upperBound - 1].forcesBreak
             )
         }
         let lineVerticalMetrics = lines.enumerated().map { lineIndex, units in
@@ -521,7 +520,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 )
             }
 
-            var inkRight = frame.notationStart
             for (unitIndex, unit) in lineUnits.enumerated() {
                 let x = placement.x[unitIndex]
                 switch unit.element {
@@ -543,7 +541,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     glyphs.append(
                         placedGlyph(
                             kind: Self.glyphKind(for: accidental.kind),
-                            anchor: CGPoint(x: x + unit.inkRight / 2, y: y),
+                            anchor: CGPoint(x: x, y: y),
                             scale: glyphScale * 0.9
                         )
                     )
@@ -589,7 +587,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     glyphs.append(contentsOf: composition.glyphs)
                     strokes.append(contentsOf: composition.strokes)
                     events.append(contentsOf: composition.events)
-                    inkRight = max(inkRight, Self.inkRight(of: composition))
 
                     if unit.hasLyric, let lyricX = placement.lyricX[unitIndex] {
                         lyrics.append(
@@ -646,18 +643,10 @@ public struct GregorianEngravingLayoutEngine: Sendable {
 
             if let custosPitch = Self.custosPitch(endingLine: lineIndex, of: lines) {
                 let nextY = staffCenter - CGFloat(custosPitch - 6) * staffStep
-                // A staff too short to be closed up (a single long melisma)
-                // may still reach the custos, which then stands clear of it
-                // as far as the staff allows.
+                // The custos stands flush with the staff's end.
                 let custosWidth = GregorianGlyphCatalog.definition(for: .custosShort)
                     .bounds.width * glyphScale
-                let custosX = min(
-                    max(
-                        width - sidePadding - 7 * notationScale,
-                        inkRight + 1.5 * notationScale
-                    ),
-                    width - sidePadding - custosWidth
-                )
+                let custosX = width - sidePadding - custosWidth
                 glyphs.append(
                     placedGlyph(
                         kind: .custos,
@@ -707,7 +696,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         /// From the lyric's left edge to the centre of its sung vowel.
         let lyricFocus: CGFloat
         let join: LyricJoin
-        let breakPenalty: Int
         let forcesBreak: Bool
 
         var neume: GregorianNeume? {
@@ -749,9 +737,22 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         var hyphenated: [Int] = []
         var notationRight: CGFloat
         var textRight: CGFloat
+        /// The words, bars, rubrics and clefs the staff may stretch before.
+        var stretchPoints = 0
+        /// The share of the staff's note spaces that it may give up.
+        var spare: CGFloat = 0
 
         func fits(_ frame: LineFrame) -> Bool {
             notationRight <= frame.notationEnd + 0.01 && textRight <= frame.textEnd + 0.01
+        }
+
+        /// The room the staff leaves at its end: by the notes, short of the
+        /// custos, or by the words, whichever leaves less. It is reckoned to
+        /// a hundredth of a point, so that no choice of breaks turns on how
+        /// the sums were rounded.
+        func slack(in frame: LineFrame) -> CGFloat {
+            let slack = min(frame.notationEnd - notationRight, frame.textEnd - textRight)
+            return (slack * 100 + 0.5).rounded(.down) / 100
         }
     }
 
@@ -773,6 +774,10 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         /// A hyphen's advance: the least space between two syllables of a
         /// word that do not touch.
         let hyphen: CGFloat
+        /// The most a staff that ends a paragraph is stretched at each word
+        /// or bar, as Exsurge stretches one; the measure of the stretch of
+        /// any other.
+        let maximumStretch: CGFloat
 
         /// The share of each space between notes that a full staff may give
         /// up, as Exsurge's.
@@ -788,6 +793,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             beforeClef = 0.5 * staffSpace
             word = max(hyphen, 0.5 * staffSpace)
             self.hyphen = hyphen
+            maximumStretch = 0.5 * staffSpace
         }
     }
 
@@ -913,12 +919,11 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         lyricFontName: String,
         openingInitial: OpeningInitial?
     ) -> [LayoutUnit] {
-        var previousWasAccidental = false
-        var previousWasLyricMark = false
         // The last lyric written, and the syllable it was sung on: none for
         // a rubric, which ends any word before it.
         var previousLyric: (text: String, syllableID: String?)?
         let punctum = 100 * glyphScale
+        let staffSpace = 200 * glyphScale
 
         func unit(
             _ element: GregorianNotationElement,
@@ -928,7 +933,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             lyricWidth: CGFloat = 0,
             lyricFocus: CGFloat = 0,
             join: LyricJoin = .word,
-            breakPenalty: Int,
             forcesBreak: Bool = false
         ) -> LayoutUnit {
             LayoutUnit(
@@ -939,7 +943,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 lyricWidth: lyricWidth,
                 lyricFocus: lyricFocus,
                 join: join,
-                breakPenalty: breakPenalty,
                 forcesBreak: forcesBreak
             )
         }
@@ -947,40 +950,22 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         return score.elements.map { element in
             switch element {
             case .clef:
-                previousWasAccidental = false
-                previousWasLyricMark = false
-                return unit(element, inkRight: 24 * notationScale, breakPenalty: 1_000)
+                return unit(element, inkRight: 24 * notationScale)
             case let .accidental(accidental):
-                previousWasAccidental = true
-                previousWasLyricMark = false
                 let definition = GregorianGlyphCatalog.definition(
                     for: Self.glyphKind(for: accidental.kind).catalogName
                 )
                 return unit(
                     element,
-                    inkRight: definition.bounds.width * glyphScale * 0.9 + 4 * notationScale,
-                    // Permit wrapping before an accidental, but never between
-                    // the accidental and the neume it governs.
-                    breakPenalty: 18
+                    // The accidental, and the space that parts it from its
+                    // note: about a quarter of a staff space, as Gregorio's.
+                    inkRight: definition.bounds.width * glyphScale * 0.9 + 0.27 * staffSpace
                 )
             case let .division(division):
-                previousWasAccidental = false
-                previousWasLyricMark = false
-                return unit(
-                    element,
-                    inkRight: (division == .final ? 17 : 12) * notationScale,
-                    // A division belongs at the end of a phrase, not at the
-                    // beginning of the next staff. The following word offers
-                    // the usable break point after the bar.
-                    breakPenalty: 1_000
-                )
+                return unit(element, inkRight: (division == .final ? 17 : 12) * notationScale)
             case .forcedBreak:
-                previousWasAccidental = false
-                previousWasLyricMark = false
-                return unit(element, inkRight: 0, breakPenalty: 0, forcesBreak: true)
+                return unit(element, inkRight: 0, forcesBreak: true)
             case let .lyricMark(mark):
-                previousWasAccidental = false
-                previousWasLyricMark = true
                 previousLyric = (mark.text, nil)
                 return unit(
                     element,
@@ -991,15 +976,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                         style: mark.style,
                         fontSize: lyricFontSize,
                         fontName: lyricFontName
-                    ),
-                    // A note-less rubric belongs between the neighboring
-                    // syllables and should not begin a staff by itself.
-                    breakPenalty: 1_000
+                    )
                 )
             case let .neume(neume):
-                let followsUnbreakableElement = previousWasAccidental || previousWasLyricMark
-                previousWasAccidental = false
-                previousWasLyricMark = false
                 let opensScore = neume.id == openingInitial?.neumeID
                 let lyricText = opensScore ? openingInitial?.remainder ?? neume.lyric : neume.lyric
                 // The opening initial takes the syllable's first letter.
@@ -1037,13 +1016,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     lyricText: lyricText,
                     lyricWidth: lyric.width,
                     lyricFocus: lyric.focus,
-                    join: join,
-                    // Chant may wrap between syllables when that produces a
-                    // fuller staff (for example "pró-" / "ximos"). A custos,
-                    // like a division, belongs at the end of what it follows.
-                    breakPenalty: followsUnbreakableElement || neume.writtenNoteCount == 0
-                        ? 1_000
-                        : 18
+                    join: join
                 )
             }
         }
@@ -1108,6 +1081,99 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         return result
     }
 
+    /// What a break before each unit costs, as TeX reckons penalties: lower
+    /// is better, and nil where no staff may break. A staff best ends with a
+    /// bar, then with a word; a word's syllables may be divided at a cost,
+    /// and beside a syllable of one letter only as a last resort; a melisma
+    /// at a bar, or where four of its notes or more stand on either side.
+    /// No break falls between an accidental and its note, before a bar or a
+    /// custos, before a rubric that closes the words before it or an
+    /// asterisk however it is written, or after a rubric that heads the
+    /// words after it. One more than the units: the end of the score.
+    private static func breakPenalties(_ units: [LayoutUnit]) -> [Int?] {
+        // The notes each syllable writes: a melisma of ten or more may be
+        // divided between staffs, as Gregorio divides one.
+        var syllableNotes: [String: Int] = [:]
+        for unit in units {
+            if let neume = unit.neume {
+                syllableNotes[neume.syllableID, default: 0] += neume.writtenNoteCount
+            }
+        }
+
+        func letterCount(_ text: String) -> Int {
+            text.filter(\.isLetter).count
+        }
+
+        func neumePenalty(_ index: Int, afterDivision: Bool) -> Int? {
+            let unit = units[index]
+            guard let neume = unit.neume, neume.writtenNoteCount > 0 else { return nil }
+            guard unit.hasLyric else {
+                // A bar within a melisma divides it as well as any.
+                if afterDivision { return -50 }
+                // Elsewhere a melisma is divided only where it leaves four
+                // notes or more on either staff, short of a bar or a word.
+                var before = 0
+                for earlier in units[..<index].reversed() {
+                    if case .division = earlier.element { break }
+                    before += earlier.neume?.writtenNoteCount ?? 0
+                    if earlier.hasLyric { break }
+                }
+                var after = 0
+                for later in units[index...] {
+                    if case .division = later.element { break }
+                    if later.hasLyric { break }
+                    after += later.neume?.writtenNoteCount ?? 0
+                }
+                guard before >= 4, after >= 4 else { return nil }
+                let previous = units[..<index].last { $0.neume != nil }?.neume
+                if previous?.syllableID == neume.syllableID {
+                    return (syllableNotes[neume.syllableID] ?? 0) >= 10 ? 300 : nil
+                }
+                // The notes of a group without words go on the melisma of
+                // the syllable before them.
+                return 200
+            }
+            switch unit.join {
+            case .word:
+                return afterDivision ? -50 : 0
+            case .syllable, .written:
+                let previousLyric = units[..<index].last(where: \.hasLyric)?.lyricText ?? ""
+                // A letter alone at a staff's end or start is a last resort.
+                return letterCount(previousLyric) <= 1 || letterCount(unit.lyricText) <= 1 ? 10_000 : 100
+            }
+        }
+
+        var result = [Int?](repeating: nil, count: units.count + 1)
+        result[units.count] = 0
+        for index in units.indices.dropFirst() {
+            let previous = units[index - 1]
+            if case .accidental = previous.element { continue }
+            if case let .lyricMark(mark) = previous.element, mark.beginsWhatFollows { continue }
+            var afterDivision = false
+            if case .division = previous.element { afterDivision = true }
+            switch units[index].element {
+            case .division, .forcedBreak:
+                continue
+            case let .lyricMark(mark):
+                // An asterisk begins no staff, though it is written with the
+                // word after it (`*~ab`).
+                result[index] = mark.beginsWhatFollows && !mark.text.hasPrefix("*")
+                    ? (afterDivision ? -50 : 0)
+                    : nil
+            case .clef:
+                result[index] = 50
+            case .accidental:
+                // A break before an accidental is a break before its note.
+                if index + 1 < units.count {
+                    result[index] = neumePenalty(index + 1, afterDivision: afterDivision)
+                }
+            case .neume:
+                result[index] = neumePenalty(index, afterDivision: afterDivision)
+            }
+        }
+        return result
+    }
+
     /// Sets a staff's units in place. Each is set after the notation before
     /// it, by the space its syllable and word call for, and moved on as far
     /// as its lyric must go to clear the lyric before it: by a word's space,
@@ -1115,12 +1181,14 @@ public struct GregorianEngravingLayoutEngine: Sendable {
     /// from the one before is joined to it if the note spaces since may
     /// close up so far, and is otherwise parted from it by one hyphen. A full
     /// staff gives up `condensation` of the share of each note space that it
-    /// may.
+    /// may; a staff that is justified adds `stretch` before each word, bar,
+    /// rubric and clef after its first, never within a word.
     private func place(
         _ units: ArraySlice<LayoutUnit>,
         frame: LineFrame,
         spacing: Spacing,
         condensation: CGFloat,
+        stretch: CGFloat = 0,
         endsWithinWord: Bool
     ) -> LinePlacement {
         let base = units.startIndex
@@ -1134,13 +1202,19 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         var previousNotation: Int?
         var previousLyric: Int?
         var lyricRight: CGFloat?
-        // Where the next text may begin: the staff's left, or a bar's line.
+        // The right of the last neume's ink.
+        var notesRight: CGFloat?
+        // Where the next text may begin: the staff's left, a bar's line, or
+        // a clef that changes within the staff.
         var textFloor = frame.staffLeft
         var crossedDivision = false
         // The note spaces since the last lyric, each with the share of it
         // still to give up: a syllable may close them to join the one before.
         var run: [(index: Int, spare: CGFloat)] = []
         var leadingClefs = true
+        // Whether the next neume's accidental has already stretched, or
+        // not, before it.
+        var stretchDecided = false
         let kept = 1 - Spacing.condensable * condensation
 
         func space(before index: Int) -> CGFloat {
@@ -1159,17 +1233,41 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             }
             switch next {
             case let .neume(neume):
-                if neume.syllableID == previous.syllableID {
+                guard neume.syllableID == previous.syllableID else {
+                    return neume.startsWord ? spacing.betweenWords : spacing.betweenSyllables
+                }
+                // The neumes of a syllable, as the GABC parts them.
+                switch neume.spaceBefore {
+                case .automatic:
                     // A quilisma is sung from the note before it.
                     return neume.notes.first?.shape == .quilisma ? 0 : spacing.withinSyllable
+                case .joined:
+                    return 0
+                case let .slashes(count):
+                    return CGFloat(count) * spacing.withinSyllable
+                case .space:
+                    return 2 * spacing.withinSyllable
                 }
-                return neume.startsWord ? spacing.betweenWords : spacing.betweenSyllables
             case .clef:
                 return spacing.beforeClef
             case .accidental:
                 return spacing.betweenSyllables
             default:
                 return 0
+            }
+        }
+
+        /// Whether the staff stretches before this unit: before each word,
+        /// bar, rubric and clef after its first.
+        func stretches(_ unit: LayoutUnit) -> Bool {
+            guard previousNotation != nil || previousLyric != nil else { return false }
+            switch unit.element {
+            case .division, .lyricMark, .clef:
+                return true
+            case .neume:
+                return unit.hasLyric && unit.join == .word
+            case .accidental, .forcedBreak:
+                return false
             }
         }
 
@@ -1186,21 +1284,40 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             case .clef, .accidental:
                 leadingClefs = false
                 let natural = space(before: index)
-                let left = previousNotation == nil
+                var left = previousNotation == nil
                     ? frame.notationStart
                     : result.notationRight + natural * kept
-                result.x[index] = max(left, frame.notationStart)
-                result.notationRight = result.x[index] + unit.inkRight
+                left = max(left, frame.notationStart)
+                var stretchesHere = stretches(unit)
+                if case .accidental = unit.element, base + index + 1 < units.endIndex {
+                    // An accidental takes the stretch of the word it begins.
+                    stretchesHere = stretches(units[base + index + 1])
+                    stretchDecided = true
+                }
+                if stretchesHere {
+                    left += stretch
+                    result.stretchPoints += 1
+                }
+                result.x[index] = left
+                result.notationRight = left + unit.inkRight
+                if case .clef = unit.element {
+                    textFloor = max(textFloor, left)
+                }
+                result.spare += natural * Spacing.condensable
                 run.append((index, natural * Spacing.condensable * (1 - condensation)))
                 previousNotation = index
 
             case .division:
                 leadingClefs = false
                 // A bar follows its syllable's words as well as its notes.
-                let left = max(
+                var left = max(
                     previousNotation == nil ? frame.notationStart : result.notationRight,
                     lyricRight ?? frame.notationStart
                 )
+                if stretches(unit) {
+                    left += stretch
+                    result.stretchPoints += 1
+                }
                 result.x[index] = left
                 result.notationRight = left + unit.inkRight
                 textFloor = max(textFloor, left + unit.inkRight / 2)
@@ -1210,12 +1327,19 @@ public struct GregorianEngravingLayoutEngine: Sendable {
 
             case .lyricMark:
                 leadingClefs = false
+                // A rubric clears the notes before it. After a bar or a clef
+                // it stands where words would, under the room they keep for
+                // the notes.
                 var left = max(
                     textFloor,
-                    previousNotation == nil ? frame.staffLeft : result.notationRight + spacing.withinSyllable
+                    notesRight.map { $0 + spacing.withinSyllable } ?? frame.staffLeft
                 )
                 if let lyricRight {
                     left = max(left, lyricRight + spacing.word)
+                }
+                if stretches(unit) {
+                    left += stretch
+                    result.stretchPoints += 1
                 }
                 result.x[index] = left
                 result.lyricX[index] = left
@@ -1271,8 +1395,15 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                         position = max(position, floor)
                     }
                 }
+                if !stretchDecided, stretches(unit) {
+                    position += stretch
+                    result.stretchPoints += 1
+                }
+                stretchDecided = false
                 result.x[index] = position
                 result.notationRight = position + unit.inkRight
+                notesRight = position + unit.inkRight
+                result.spare += natural * Spacing.condensable
                 // An accidental stands just before the neume it governs.
                 if let previousNotation, case .accidental = units[base + previousNotation].element {
                     result.x[previousNotation] = position + unit.inkLeft
@@ -1292,6 +1423,25 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             }
         }
 
+        // A bar between two neumes stands midway between their notes, though
+        // not over the words before it.
+        for index in 0..<count {
+            guard case .division = units[base + index].element,
+                  index > 0, index + 1 < count,
+                  units[base + index - 1].neume != nil,
+                  units[base + index + 1].neume != nil else {
+                continue
+            }
+            let before = units[base + index - 1]
+            let after = units[base + index + 1]
+            let width = units[base + index].inkRight
+            let middle = (result.x[index - 1] + before.inkRight + result.x[index + 1] + after.inkLeft) / 2
+            let wordsEnd = before.hasLyric
+                ? (result.lyricX[index - 1] ?? 0) + before.lyricWidth
+                : -CGFloat.greatestFiniteMagnitude
+            result.x[index] = max(middle, wordsEnd) - width / 2
+        }
+
         // A word that goes on in the next staff ends this one with a hyphen.
         if endsWithinWord, let previousLyric, let right = lyricRight,
            units[base + previousLyric].neume != nil {
@@ -1302,45 +1452,64 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         return result
     }
 
-    /// Sets a staff in place with its notes at their natural spacing, or,
-    /// if they do not fit so, closed up by as little as fits them.
-    private func placeFitting(
+    /// Sets a staff in place: at its natural spacing, closed up by as little
+    /// as fits it when it is too full, and justified when it is not. The last
+    /// staff of a paragraph, before a forced break or the score's end, is
+    /// justified only to bring a closing bar to the staff's end, and then
+    /// only by a little.
+    private func placeLine(
         _ units: ArraySlice<LayoutUnit>,
         frame: LineFrame,
         spacing: Spacing,
-        endsWithinWord: Bool
+        endsWithinWord: Bool,
+        endsParagraph: Bool
     ) -> LinePlacement {
-        func place(_ condensation: CGFloat) -> LinePlacement {
+        func place(_ condensation: CGFloat, stretch: CGFloat = 0) -> LinePlacement {
             self.place(
                 units,
                 frame: frame,
                 spacing: spacing,
                 condensation: condensation,
+                stretch: stretch,
                 endsWithinWord: endsWithinWord
             )
         }
         let natural = place(0)
-        guard !natural.fits(frame) else { return natural }
-        var best = place(1)
-        guard best.fits(frame) else { return best }
-        var low: CGFloat = 0
-        var high: CGFloat = 1
-        for _ in 0..<10 {
-            let middle = (low + high) / 2
-            let attempt = place(middle)
-            if attempt.fits(frame) {
-                high = middle
-                best = attempt
-            } else {
-                low = middle
+        guard natural.fits(frame) else {
+            var best = place(1)
+            guard best.fits(frame) else { return best }
+            var low: CGFloat = 0
+            var high: CGFloat = 1
+            for _ in 0..<10 {
+                let middle = (low + high) / 2
+                let attempt = place(middle)
+                if attempt.fits(frame) {
+                    high = middle
+                    best = attempt
+                } else {
+                    low = middle
+                }
             }
+            return best
         }
-        return best
+        let slack = natural.slack(in: frame)
+        guard slack > 0.5, natural.stretchPoints > 0 else { return natural }
+        let stretch = slack / CGFloat(natural.stretchPoints)
+        if endsParagraph {
+            let endsWithDivision = units.last(where: { !$0.forcesBreak }).map {
+                if case .division = $0.element { return true }
+                return false
+            } ?? false
+            guard endsWithDivision, stretch <= spacing.maximumStretch else { return natural }
+        }
+        return place(0, stretch: stretch)
     }
 
-    /// Breaks the units into staffs: each takes as many as fit it with its
-    /// notes closed up as far as they may be, and then breaks where it best
-    /// may, in its latter half.
+    /// Breaks the units into staffs, a paragraph at a time between forced
+    /// breaks, choosing the breaks that best serve the whole paragraph, as
+    /// TeX and Gregorio choose them: each staff is reckoned by how far it
+    /// must be stretched or closed up and by what its break costs, and a
+    /// last staff that holds a lone syllable is avoided.
     private func breakLines(
         _ units: [LayoutUnit],
         frame: (Int) -> LineFrame,
@@ -1348,45 +1517,114 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         wordContinues: [Bool]
     ) -> [Range<Int>] {
         guard !units.isEmpty else { return [0..<0] }
+        let penalties = Self.breakPenalties(units)
         var lines: [Range<Int>] = []
         var start = 0
         while start < units.count {
-            let lineFrame = frame(lines.count)
-            var end = start
-            var split: Int?
-            while end < units.count {
-                let unit = units[end]
-                end += 1
-                if unit.forcesBreak {
-                    split = end
-                    break
-                }
-                guard end - start > 1 else { continue }
-                // Permit condensation before wrapping, as Exsurge does.
-                let fits = place(
-                    units[start..<end],
-                    frame: lineFrame,
-                    spacing: spacing,
-                    condensation: 1,
-                    endsWithinWord: wordContinues[end]
-                ).fits(lineFrame)
-                if fits { continue }
-                let fallback = end - 1
-                let earliest = start + max(1, (fallback - start) / 2)
-                split = (earliest...fallback)
-                    .filter { candidate in units[start..<candidate].contains { $0.neume != nil } }
-                    .min { lhs, rhs in
-                        units[lhs].breakPenalty == units[rhs].breakPenalty
-                            ? lhs > rhs
-                            : units[lhs].breakPenalty < units[rhs].breakPenalty
-                    } ?? fallback
-                break
-            }
-            let upper = split ?? end
-            lines.append(start..<upper)
-            start = upper
+            let end = units[start...].firstIndex(where: \.forcesBreak).map { $0 + 1 } ?? units.count
+            lines += breakParagraph(
+                units,
+                start..<end,
+                frame: { lineStart in frame(lineStart == 0 ? 0 : 1) },
+                spacing: spacing,
+                wordContinues: wordContinues,
+                penalties: penalties
+            )
+            start = end
         }
         return lines
+    }
+
+    private func breakParagraph(
+        _ units: [LayoutUnit],
+        _ paragraph: Range<Int>,
+        frame: (Int) -> LineFrame,
+        spacing: Spacing,
+        wordContinues: [Bool],
+        penalties: [Int?]
+    ) -> [Range<Int>] {
+        let candidates = [paragraph.lowerBound]
+            + (paragraph.lowerBound + 1..<paragraph.upperBound).filter { penalties[$0] != nil }
+            + [paragraph.upperBound]
+        var cost = Array(repeating: Double.infinity, count: candidates.count)
+        var previous = Array(repeating: -1, count: candidates.count)
+        cost[0] = 0
+
+        for end in 1..<candidates.count {
+            let b = candidates[end]
+            let endsParagraph = b == paragraph.upperBound
+            let penalty = endsParagraph ? 0 : Double(penalties[b] ?? 0)
+            for begin in stride(from: end - 1, through: 0, by: -1) where cost[begin].isFinite {
+                let a = candidates[begin]
+                let lineFrame = frame(a)
+                let natural = place(
+                    units[a..<b],
+                    frame: lineFrame,
+                    spacing: spacing,
+                    condensation: 0,
+                    endsWithinWord: wordContinues[b]
+                )
+                var badness: Double
+                if natural.fits(lineFrame) {
+                    if endsParagraph {
+                        badness = 0
+                    } else {
+                        // A staff with nowhere to stretch, a word alone, is
+                        // reckoned as if stretched in one place.
+                        let stretch = natural.slack(in: lineFrame) / CGFloat(max(1, natural.stretchPoints))
+                        badness = 100 * pow(Double(stretch / spacing.maximumStretch), 3)
+                    }
+                } else {
+                    let condensed = place(
+                        units[a..<b],
+                        frame: lineFrame,
+                        spacing: spacing,
+                        condensation: 1,
+                        endsWithinWord: wordContinues[b]
+                    )
+                    if condensed.fits(lineFrame) {
+                        let overflow = -natural.slack(in: lineFrame)
+                        let share = natural.spare > 0 ? min(1, Double(overflow / natural.spare)) : 1
+                        badness = 100 * pow(share, 3)
+                    } else if begin == end - 1, previous[end] < 0 {
+                        // Nothing shorter fits: the staff is overfull, and
+                        // worse than any that fits.
+                        badness = 1e9
+                    } else {
+                        // A longer staff will not fit either.
+                        break
+                    }
+                }
+                var demerits = pow(10 + badness, 2)
+                    + (penalty < 0 ? -penalty * penalty : penalty * penalty)
+                if endsParagraph, begin > 0,
+                   units[a..<b].filter(\.hasLyric).count <= 1 {
+                    // A last staff of one syllable is worse than a loose
+                    // staff before it.
+                    demerits += 1_000_000
+                }
+                if cost[begin] + demerits < cost[end] {
+                    cost[end] = cost[begin] + demerits
+                    previous[end] = begin
+                }
+            }
+        }
+
+        // Every end has a way back: the staff from the candidate before it
+        // either fits or is taken overfull.
+        var breaks: [Int] = []
+        var index = candidates.count - 1
+        while index > 0, previous[index] >= 0 {
+            breaks.append(candidates[index])
+            index = previous[index]
+        }
+        var lines: [Range<Int>] = []
+        var lineStart = paragraph.lowerBound
+        for lineEnd in breaks.reversed() {
+            lines.append(lineStart..<lineEnd)
+            lineStart = lineEnd
+        }
+        return lines.isEmpty ? [paragraph] : lines
     }
 
     private func compose(
@@ -1403,6 +1641,15 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         var result = Composition()
         let punctumWidth = 100 * glyphScale
         var noteOrigins: [CGFloat] = []
+        // The gap between notes repeated on one pitch, as Exsurge sets it: a
+        // quarter staff space after a virga, an eighth after a stropha.
+        func repeatGap(_ note: GregorianNote) -> CGFloat {
+            (note.shape == .stropha ? 0.125 : 0.25) * staffStep * 2
+        }
+        func glyphWidth(_ name: GregorianGlyphName) -> CGFloat {
+            GregorianGlyphCatalog.definition(for: name).bounds.width * glyphScale
+        }
+        let stropharum: Set<GregorianNeumeForm> = [.apostropha, .distropha, .tristropha]
 
         switch neume.form {
         case .podatus where neume.notes.count >= 2,
@@ -1414,7 +1661,23 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 }
             }
         case .climacus, .ancus, .punctaInclinata:
-            noteOrigins = neume.notes.indices.map { originX + CGFloat($0) * punctumWidth * 0.72 }
+            // Each diamond steps from the last by its interval, as Exsurge
+            // steps them; the first stands a quarter staff space clear of
+            // the note it falls from.
+            let inclinatum = glyphWidth(.punctumInclinatum)
+            var x = originX
+            for (index, note) in neume.notes.enumerated() {
+                if index > 0 {
+                    let previous = neume.notes[index - 1]
+                    if previous.shape == .inclinatum {
+                        let steps = abs(previous.pitch - note.pitch)
+                        x += inclinatum * (steps == 0 ? 1.1 : CGFloat(steps) * 2 / 3)
+                    } else {
+                        x += glyphWidth(glyphName(for: previous)) + 0.25 * staffStep * 2
+                    }
+                }
+                noteOrigins.append(x)
+            }
         case .porrectus where neume.notes.count >= 3,
              .porrectusFlexus where neume.notes.count >= 3:
             let swashWidth = GregorianGlyphCatalog.definition(for: Self.porrectusSwash(neume)).bounds.width * glyphScale
@@ -1422,16 +1685,28 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             for index in 2..<neume.notes.count {
                 noteOrigins.append(originX + swashWidth + CGFloat(index - 2) * punctumWidth * 0.92)
             }
+        case .bivirga, .trivirga, .apostropha, .distropha, .tristropha:
+            // Notes repeated on one pitch stand a little apart.
+            var x = originX
+            for index in neume.notes.indices {
+                if index > 0 {
+                    let previous = neume.notes[index - 1]
+                    let glyph = stropharum.contains(neume.form) ? .stropha : glyphName(for: previous)
+                    x += glyphWidth(glyph) + repeatGap(previous)
+                }
+                noteOrigins.append(x)
+            }
         default:
             noteOrigins = neume.notes.indices.map { originX + CGFloat($0) * punctumWidth * 0.92 }
         }
         // A note written twice or thrice (`hvv`, `hsss`) draws a glyph for
-        // each, and moves the notes after it along by as much.
-        let repeatedAdvance = punctumWidth * Self.repeatedNoteAdvance
-        var repeatedBefore = 0
-        for index in neume.notes.indices {
-            noteOrigins[index] += CGFloat(repeatedBefore) * repeatedAdvance
-            repeatedBefore += neume.notes[index].repetitionCount - 1
+        // each, a repeated note's gap apart, and moves the notes after it
+        // along by as much.
+        var shift: CGFloat = 0
+        for (index, note) in neume.notes.enumerated() {
+            noteOrigins[index] += shift
+            let glyph = stropharum.contains(neume.form) ? .stropha : glyphName(for: note)
+            shift += CGFloat(note.repetitionCount - 1) * (glyphWidth(glyph) + repeatGap(note))
         }
 
         let isPorrectus = neume.form == .porrectus || neume.form == .porrectusFlexus
@@ -1502,7 +1777,10 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             let repetitions = (1..<max(1, note.repetitionCount)).map { repetition in
                 GregorianPlacedGlyph(
                     kind: first.kind,
-                    frame: first.frame.offsetBy(dx: CGFloat(repetition) * repeatedAdvance, dy: 0),
+                    frame: first.frame.offsetBy(
+                        dx: CGFloat(repetition) * (first.frame.width + repeatGap(note)),
+                        dy: 0
+                    ),
                     eventID: note.id
                 )
             }

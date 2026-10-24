@@ -73,6 +73,43 @@ class LyricTextTest {
     }
 
     @Test
+    fun aRubricThatHeadsWhatFollowsStandsAfterTheBarWrittenWithIt() {
+        val score = GregorianScoreParser.parse(
+            "%% (c4) me(g.)um.(f.) R/.(::)In(f) ma(f)nus(f) Dó(gf)mi(g)ne,(g.) *(;) Com(h)mén(f)do(gh) (::)",
+        )
+        val sequence = score.elements.mapNotNull { element ->
+            when (element) {
+                is GregorianNotationElement.Neume -> element.neume.lyric
+                is GregorianNotationElement.LyricMark -> "[${element.mark.text}]"
+                is GregorianNotationElement.Division -> "|"
+                else -> null
+            }
+        }
+        assertEquals(
+            listOf("me", "um.", "|", "[℟.]", "In", "ma", "nus", "Dó", "mi", "ne,", "[*]", "|", "Com", "mén", "do", "|"),
+            sequence,
+        )
+    }
+
+    @Test
+    fun aRubricHeadsTheWordsAfterItOrClosesThoseBeforeIt() {
+        val cases = listOf(
+            Triple("%% (c4) V/. Dó(h)mi(h)ne(h) (::)", "℣.", true),
+            Triple("%% (c4) ne,(f.) R/.(::)In(f) (::)", "℟.", true),
+            Triple("%% (c4) a,(h.) (::) 2.() Pro(f)cul(g) (::)", "2.", true),
+            Triple("%% (c4) ✠() Ma(f)gní(g)fi(h)cat(h) (::)", "✠", true),
+            Triple("%% (c4) am:(hg..) (:) † In(i)tra(i) (::)", "†", true),
+            Triple("%% (c3) Quó(h)ni(h)am hæc, †(h) et(h) (::)", "†", false),
+            Triple("%% (c3) Eu(ei)ge,(i) *() ser(i)ve(i) (::)", "*", false),
+            Triple("%% (c4) e(g) iij.(::)", "iij.", false),
+        )
+        for ((gabc, text, begins) in cases) {
+            val mark = marks(GregorianScoreParser.parse(gabc)).first { it.text == text }
+            assertEquals(gabc, begins, mark.beginsWhatFollows)
+        }
+    }
+
+    @Test
     fun aSungSyllableMadeOnlyOfSignsIsLeftWhole() {
         val score = GregorianScoreParser.parse("%% (c4) *(h) 2.(g) (::)")
         assertEquals(listOf("*", "2."), score.neumes.map { it.lyric })

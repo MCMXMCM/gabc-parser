@@ -944,8 +944,10 @@ final class GregorianLayoutTests: XCTestCase {
             timeline: GregorianEventTimeline(events: events)
         )
         let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390)
-        let glyphScale = 1.0 / 16
-        let advance = 100 * glyphScale * 0.92
+        // Repeated notes stand apart, as Exsurge sets them: a quarter staff
+        // space after a virga, an eighth after a stropha.
+        let staffSpace = 200 * (1.0 / 16)
+        let gaps: [GregorianGlyphName: CGFloat] = [.virgaShort: 0.25 * staffSpace, .stropha: 0.125 * staffSpace]
 
         XCTAssertEqual(layout.events.map(\.eventID), score.eventIDs)
         XCTAssertEqual(layout.neumes.map(\.eventIDs.count), [1, 1, 1, 1])
@@ -961,7 +963,11 @@ final class GregorianLayoutTests: XCTestCase {
                 .sorted { $0.frame.minX < $1.frame.minX }
             XCTAssertEqual(notes.count, count, eventID)
             for (previous, next) in zip(notes, notes.dropFirst()) {
-                XCTAssertEqual(next.frame.minX - previous.frame.minX, advance, accuracy: 0.001)
+                XCTAssertEqual(
+                    next.frame.minX - previous.frame.maxX,
+                    gaps[name] ?? 0,
+                    accuracy: 0.001
+                )
                 XCTAssertEqual(next.frame.minY, previous.frame.minY, accuracy: 0.001)
                 XCTAssertEqual(next.frame.size, previous.frame.size)
             }

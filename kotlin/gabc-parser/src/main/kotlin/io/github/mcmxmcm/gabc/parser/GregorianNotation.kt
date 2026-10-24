@@ -111,6 +111,21 @@ public data class GregorianNote(
     internal val standsAlone: Boolean get() = isCustos || repetitionCount > 1
 }
 
+/** The space a GABC group writes before a neume, after the neume before it in the same group. */
+public sealed interface GregorianNeumeSpace {
+    /** None is written: the engraver's own, between the neumes it divides a run of notes into. */
+    public data object Automatic : GregorianNeumeSpace
+
+    /** `!`: the two neumes are joined. */
+    public data object Joined : GregorianNeumeSpace
+
+    /** `/`, `//`: a small space for each slash. */
+    public data class Slashes(val count: Int) : GregorianNeumeSpace
+
+    /** A space within the group: a neumatic cut. */
+    public data object Space : GregorianNeumeSpace
+}
+
 public data class GregorianNeume(
     val id: String,
     val syllableId: String,
@@ -125,6 +140,8 @@ public data class GregorianNeume(
      * note (`{ia}.`); null when none is marked, and the sung vowel is centred.
      */
     val centeredRange: IntRange? = null,
+    /** The space written before the neume, after the one before it in its group: [GregorianNeumeSpace.Automatic] for a group's first neume. */
+    val spaceBefore: GregorianNeumeSpace = GregorianNeumeSpace.Automatic,
 ) {
     val eventIds: List<String> get() = notes.map { it.id }
 
@@ -139,6 +156,12 @@ public data class GregorianLyricMark(
     val sourceRange: GregorianSourceRange,
     /** The identifier of the score the mark was parsed in, if one was given. */
     val scoreId: String? = null,
+    /**
+     * Whether the mark heads the words after it, as ℣., ℟., a verse number or any sign written before a syllable's words
+     * does, rather than closing the words before it, as an asterisk, a flex or a repeat mark written after them or alone
+     * does.
+     */
+    val beginsWhatFollows: Boolean = false,
 ) {
     /** Named by where it is written, after its score, as the score's notes are: `lyric-mark-5-7`, or `kyrie-lyric-mark-5-7`. */
     val id: String get() = "${scoreId?.let { "$it-" } ?: ""}lyric-mark-${sourceRange.lowerBound}-${sourceRange.upperBound}"
@@ -319,20 +342,27 @@ public object GregorianScoreParser {
                         startsWord = if (index == 0) leadingStartsWord else true,
                         sourceRange = GregorianSourceRange(offsets[cursor] + index, offsets[cursor] + index + 1),
                         scoreId = scoreId,
+                        beginsWhatFollows = true,
                     ),
                 )
             }
-            if (lyric.isNotEmpty() && !hasNotes) {
+            // A lyric written with a bar or a clef and no notes is a rubric. One that heads what follows stands after
+            // the bar, at the head of its words: `me(g.)um.(f.) R/.(::)In(f)` reads `um. ‖ ℟. In`.
+            val standaloneMark = if (lyric.isNotEmpty() && !hasNotes) {
                 val displayLyric = standaloneLyricText(lyric)
-                elements += GregorianNotationElement.LyricMark(
-                    GregorianLyricMark(
-                        text = displayLyric,
-                        style = standaloneLyricStyle(displayLyric, parsedLyricStyle),
-                        startsWord = startsWord,
-                        sourceRange = GregorianSourceRange(offsets[cursor], offsets[open]),
-                        scoreId = scoreId,
-                    ),
+                GregorianLyricMark(
+                    text = displayLyric,
+                    style = standaloneLyricStyle(displayLyric, parsedLyricStyle),
+                    startsWord = startsWord,
+                    sourceRange = GregorianSourceRange(offsets[cursor], offsets[open]),
+                    scoreId = scoreId,
+                    beginsWhatFollows = headsWhatFollows(displayLyric),
                 )
+            } else {
+                null
+            }
+            if (standaloneMark != null && !standaloneMark.beginsWhatFollows) {
+                elements += GregorianNotationElement.LyricMark(standaloneMark)
             }
             var appliedLyric = false
 
@@ -403,12 +433,16 @@ public object GregorianScoreParser {
                                         segment.last().sourceRange.upperBound,
                                     ),
                                     centeredRange = if (segmentIndex == 0 && neumeLyric.isNotEmpty()) sung.centeredRange else null,
+                                    spaceBefore = if (segmentIndex == 0) token.spaceBefore else GregorianNeumeSpace.Automatic,
                                 ),
                             )
                         }
                         appliedLyric = true
                     }
                 }
+            }
+            if (standaloneMark != null && standaloneMark.beginsWhatFollows) {
+                elements += GregorianNotationElement.LyricMark(standaloneMark)
             }
             for ((index, mark) in sung.trailing.withIndex()) {
                 val lowerBound = offsets[open] - sung.trailing.size + index
@@ -436,7 +470,7 @@ public object GregorianScoreParser {
     private sealed interface ParsedToken {
         class Clef(val clef: GregorianClef) : ParsedToken
         class Accidental(val mark: GregorianAccidentalMark) : ParsedToken
-        class Notes(val notes: List<ParsedNote>) : ParsedToken
+        class Notes(val notes: List<ParsedNote>, val spaceBefore: GregorianNeumeSpace) : ParsedToken
         class Division(val division: GregorianDivision) : ParsedToken
         data object ForcedBreak : ParsedToken
     }
@@ -461,11 +495,25 @@ public object GregorianScoreParser {
         val result = mutableListOf<ParsedToken>()
         val currentNotes = mutableListOf<ParsedNote>()
         var index = 0
+        // The separator written since the last run of notes, which the next run takes as its space before: the first,
+        // as Exsurge reads it, with `//` counted as one.
+        var spaceBefore: GregorianNeumeSpace = GregorianNeumeSpace.Automatic
 
         fun flushNotes() {
             if (currentNotes.isNotEmpty()) {
-                result += ParsedToken.Notes(currentNotes.toList())
+                result += ParsedToken.Notes(currentNotes.toList(), spaceBefore)
                 currentNotes.clear()
+                spaceBefore = GregorianNeumeSpace.Automatic
+            }
+        }
+
+        fun separate(space: GregorianNeumeSpace) {
+            val current = spaceBefore
+            spaceBefore = when {
+                current == GregorianNeumeSpace.Automatic -> space
+                current is GregorianNeumeSpace.Slashes && space is GregorianNeumeSpace.Slashes ->
+                    GregorianNeumeSpace.Slashes(current.count + space.count)
+                else -> current
             }
         }
 
@@ -492,6 +540,13 @@ public object GregorianScoreParser {
             }
             if (character.isWhitespace() || character == '/' || character == '!') {
                 flushNotes()
+                separate(
+                    when (character) {
+                        '/' -> GregorianNeumeSpace.Slashes(1)
+                        '!' -> GregorianNeumeSpace.Joined
+                        else -> GregorianNeumeSpace.Space
+                    },
+                )
                 index += 1
                 continue
             }
@@ -632,7 +687,10 @@ public object GregorianScoreParser {
                 repetitionCount = if (isCustos) 1 else repeatedNoteCount(suffix),
                 sourceRange = GregorianSourceRange(at(noteStart), at(index)),
             )
-            if (isCustos || '!' in suffix) flushNotes()
+            if (isCustos || '!' in suffix) {
+                flushNotes()
+                if ('!' in suffix) separate(GregorianNeumeSpace.Joined)
+            }
         }
 
         flushNotes()
@@ -739,6 +797,12 @@ public object GregorianScoreParser {
 
     /** Whether a word of a lyric is a rubric: a sign, a repeat mark, or a verse number. */
     private fun isRubricMark(word: String): Boolean = word in rubrics || verseNumber.matches(word)
+
+    /**
+     * Whether a rubric written alone heads the words after it: ℣., ℟., the cross signed at a canticle's first word, or a
+     * verse number. The others close the words before them.
+     */
+    private fun headsWhatFollows(text: String): Boolean = text == "℣." || text == "℟." || text == "✠" || verseNumber.matches(text)
 
     /** A text's characters as a reader counts them, an accent with its letter, as Swift counts them. */
     private fun graphemes(text: String): List<String> {

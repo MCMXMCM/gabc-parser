@@ -183,6 +183,20 @@ public struct GregorianNote: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+/// The space a GABC group writes before a neume, after the neume before it
+/// in the same group.
+public enum GregorianNeumeSpace: Codable, Hashable, Sendable {
+    /// None is written: the engraver's own, between the neumes it divides a
+    /// run of notes into.
+    case automatic
+    /// `!`: the two neumes are joined.
+    case joined
+    /// `/`, `//`: a small space for each slash.
+    case slashes(Int)
+    /// A space within the group: a neumatic cut.
+    case space
+}
+
 public struct GregorianNeume: Codable, Hashable, Sendable, Identifiable {
     public let id: String
     public let syllableID: String
@@ -196,6 +210,9 @@ public struct GregorianNeume: Codable, Hashable, Sendable, Identifiable {
     /// the GABC marks to be centred under the first note (`{ia}.`); nil when
     /// none is marked, and the sung vowel is centred.
     public let centeredRange: Range<Int>?
+    /// The space written before the neume, after the one before it in its
+    /// group: `.automatic` for a group's first neume.
+    public let spaceBefore: GregorianNeumeSpace
 
     public var eventIDs: [String] {
         notes.map(\.id)
@@ -216,7 +233,8 @@ public struct GregorianNeume: Codable, Hashable, Sendable, Identifiable {
         notes: [GregorianNote],
         form: GregorianNeumeForm? = nil,
         sourceRange: GregorianSourceRange,
-        centeredRange: Range<Int>? = nil
+        centeredRange: Range<Int>? = nil,
+        spaceBefore: GregorianNeumeSpace = .automatic
     ) {
         self.id = id
         self.syllableID = syllableID
@@ -227,6 +245,7 @@ public struct GregorianNeume: Codable, Hashable, Sendable, Identifiable {
         self.form = form ?? GregorianNeumeClassifier.classify(notes)
         self.sourceRange = sourceRange
         self.centeredRange = centeredRange
+        self.spaceBefore = spaceBefore
     }
 }
 
@@ -243,19 +262,26 @@ public struct GregorianLyricMark: Codable, Hashable, Sendable, Identifiable {
     public let sourceRange: GregorianSourceRange
     /// The identifier of the score the mark was parsed in, if one was given.
     public let scoreID: String?
+    /// Whether the mark heads the words after it, as ℣., ℟., a verse number
+    /// or any sign written before a syllable's words does, rather than
+    /// closing the words before it, as an asterisk, a flex or a repeat mark
+    /// written after them or alone does.
+    public let beginsWhatFollows: Bool
 
     public init(
         text: String,
         style: GregorianLyricStyle,
         startsWord: Bool,
         sourceRange: GregorianSourceRange,
-        scoreID: String? = nil
+        scoreID: String? = nil,
+        beginsWhatFollows: Bool = false
     ) {
         self.text = text
         self.style = style
         self.startsWord = startsWord
         self.sourceRange = sourceRange
         self.scoreID = scoreID
+        self.beginsWhatFollows = beginsWhatFollows
     }
 }
 
@@ -495,30 +521,35 @@ public enum GregorianScoreParser {
                                 lowerBound: cursorOffset + index,
                                 upperBound: cursorOffset + index + 1
                             ),
-                            scoreID: scoreID
+                            scoreID: scoreID,
+                            beginsWhatFollows: true
                         )
                     )
                 )
             }
+            // A lyric written with a bar or a clef and no notes is a rubric.
+            // One that heads what follows stands after the bar, at the head
+            // of its words: `me(g.)um.(f.) R/.(::)In(f)` reads `um. ‖ ℟. In`.
+            var standaloneMark: GregorianLyricMark?
             if !lyric.isEmpty, !hasNotes {
                 let displayLyric = standaloneLyricText(lyric)
-                elements.append(
-                    .lyricMark(
-                        GregorianLyricMark(
-                            text: displayLyric,
-                            style: standaloneLyricStyle(
-                                displayLyric,
-                                parsedStyle: parsedLyricStyle
-                            ),
-                            startsWord: startsWord,
-                            sourceRange: GregorianSourceRange(
-                                lowerBound: cursorOffset,
-                                upperBound: openOffset
-                            ),
-                            scoreID: scoreID
-                        )
-                    )
+                standaloneMark = GregorianLyricMark(
+                    text: displayLyric,
+                    style: standaloneLyricStyle(
+                        displayLyric,
+                        parsedStyle: parsedLyricStyle
+                    ),
+                    startsWord: startsWord,
+                    sourceRange: GregorianSourceRange(
+                        lowerBound: cursorOffset,
+                        upperBound: openOffset
+                    ),
+                    scoreID: scoreID,
+                    beginsWhatFollows: headsWhatFollows(displayLyric)
                 )
+            }
+            if let standaloneMark, !standaloneMark.beginsWhatFollows {
+                elements.append(.lyricMark(standaloneMark))
             }
             var appliedLyric = false
 
@@ -532,7 +563,7 @@ public enum GregorianScoreParser {
                     elements.append(.division(division))
                 case .forcedBreak:
                     elements.append(.forcedBreak)
-                case let .notes(notes):
+                case let .notes(notes, spaceBefore):
                     var mappedNotes: [GregorianNote] = []
                     var mappedEvents: [ResolvedEvent] = []
                     for note in notes {
@@ -601,13 +632,17 @@ public enum GregorianScoreParser {
                                     ),
                                     centeredRange: segmentIndex == 0 && !neumeLyric.isEmpty
                                         ? sung.centeredRange
-                                        : nil
+                                        : nil,
+                                    spaceBefore: segmentIndex == 0 ? spaceBefore : .automatic
                                 )
                             )
                         )
                     }
                     appliedLyric = true
                 }
+            }
+            if let standaloneMark, standaloneMark.beginsWhatFollows {
+                elements.append(.lyricMark(standaloneMark))
             }
             for (index, mark) in sung.trailing.enumerated() {
                 let lowerBound = openOffset - sung.trailing.count + index
@@ -646,7 +681,7 @@ public enum GregorianScoreParser {
     private enum ParsedToken {
         case clef(GregorianClef)
         case accidental(GregorianAccidentalMark)
-        case notes([ParsedNote])
+        case notes([ParsedNote], spaceBefore: GregorianNeumeSpace)
         case division(GregorianDivision)
         case forcedBreak
     }
@@ -674,11 +709,27 @@ public enum GregorianScoreParser {
         var result: [ParsedToken] = []
         var currentNotes: [ParsedNote] = []
         var index = 0
+        // The separator written since the last run of notes, which the next
+        // run takes as its space before: the first, as Exsurge reads it,
+        // with `//` counted as one.
+        var spaceBefore = GregorianNeumeSpace.automatic
 
         func flushNotes() {
             if !currentNotes.isEmpty {
-                result.append(.notes(currentNotes))
+                result.append(.notes(currentNotes, spaceBefore: spaceBefore))
                 currentNotes.removeAll(keepingCapacity: true)
+                spaceBefore = .automatic
+            }
+        }
+
+        func separate(_ space: GregorianNeumeSpace) {
+            switch (spaceBefore, space) {
+            case (.automatic, _):
+                spaceBefore = space
+            case let (.slashes(count), .slashes(more)):
+                spaceBefore = .slashes(count + more)
+            default:
+                break
             }
         }
 
@@ -712,6 +763,7 @@ public enum GregorianScoreParser {
 
             if character.isWhitespace || character == "/" || character == "!" {
                 flushNotes()
+                separate(character == "/" ? .slashes(1) : character == "!" ? .joined : .space)
                 index += 1
                 continue
             }
@@ -908,6 +960,7 @@ public enum GregorianScoreParser {
             )
             if isCustos || suffix.contains("!") {
                 flushNotes()
+                if suffix.contains("!") { separate(.joined) }
             }
         }
 
@@ -1062,8 +1115,18 @@ public enum GregorianScoreParser {
     /// Whether a word of a lyric is a rubric: a sign, a repeat mark, or a
     /// verse number.
     private static func isRubricMark(_ word: String) -> Bool {
-        rubricMarks.contains(word)
-            || word.range(of: #"^[0-9]+\.?$"#, options: .regularExpression) != nil
+        rubricMarks.contains(word) || isVerseNumber(word)
+    }
+
+    private static func isVerseNumber(_ word: String) -> Bool {
+        word.range(of: #"^[0-9]+\.?$"#, options: .regularExpression) != nil
+    }
+
+    /// Whether a rubric written alone heads the words after it: ℣., ℟., the
+    /// cross signed at a canticle's first word, or a verse number. The
+    /// others close the words before them.
+    private static func headsWhatFollows(_ text: String) -> Bool {
+        text == "℣." || text == "℟." || text == "✠" || isVerseNumber(text)
     }
 
     /// A group's lyric style, from its source without tags.

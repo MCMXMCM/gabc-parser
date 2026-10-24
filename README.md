@@ -48,7 +48,7 @@ Add the package in Xcode (File ▸ Add Package Dependencies…, with
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.4.0")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.5.0")
 ],
 targets: [
     .target(
@@ -211,7 +211,7 @@ and in the app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.4.0")
+    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.5.0")
 }
 ```
 
@@ -294,7 +294,8 @@ Both languages read the same notation, and fail on the same tokens.
 - Mora (`.`, `..`), horizontal episema (`_`; below the note with `_0`),
   vertical episema (`'`), and accidentals (`ix`, `iy`, `i#`).
 - Divisions `,` `` ` `` `;` `:` `::`, the line breaks `z` and `Z`, and the
-  neume separators `/` and `!`. `z0`, a custos for the next note, breaks no
+  neume separators: `/` a quarter staff space, `//` and a space within the
+  group half of one, `!` none. `z0`, a custos for the next note, breaks no
   line: a staff's end has its own custos.
 - In lyrics, tags are dropped, a tilde is a space, and braces name the
   letters to centre under the note (`{ia}.`); psalm-tone pointing marks
@@ -302,7 +303,10 @@ Both languages read the same notation, and fail on the same tokens.
   and `R/.` become ℣. and ℟.; they, the asterisks, crosses, repeat signs
   (`ij.`, `iij.`) and verse numbers are rubrics, whether written alone or
   with a sung syllable (`V/. Dó`, `2. Pro`, `hæc, †`), and a rubric ends the
-  word before it.
+  word before it. One written before a syllable heads it; ℣., ℟., ✠ and verse
+  numbers written alone head what follows, and stand after the bar they are
+  written with (`um.(f.) R/.(::)In(f)`); the others close the words before
+  them.
 
 Words are set as the chant books set them. Each syllable's vowel stands under
 its first note (past a consonantal i or u: `ius`, `qui`); the syllables of a
@@ -310,6 +314,19 @@ word are either joined, the notes between them closing up by as much as 30%
 of their spacing to let them meet, or parted by one hyphen set just after the
 first, in the lyrics' own type; a word keeps at least a word's space from the
 next; and a word divided at a staff's end carries its hyphen there.
+
+Staffs are broken and justified as the chant books break them. A paragraph's
+breaks are chosen together, as TeX and Gregorio choose them, by how far each
+staff must be stretched or closed up and by what each break costs: a staff
+best ends at a bar, then at a word; a word is divided at a cost, beside a
+syllable of one letter only as a last resort; a melisma at a bar, or where
+four of its notes or more stand on either side; and a last staff that holds
+one syllable is avoided. No staff begins with a bar, an asterisk or a rubric
+that closes the words before it, or ends with one that heads the words after
+it, and none ends between an accidental and its note. Every staff but a
+paragraph's last is justified to the full measure at its words, bars, rubrics
+and clefs, never within a word; a bar stands midway between its notes, and the
+custos at the staff's end.
 
 Neumes are grouped and named as Exsurge groups them: podatus, clivis,
 torculus, porrectus, scandicus, climacus, ancus, salicus, pes subpunctis and

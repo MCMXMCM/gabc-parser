@@ -169,7 +169,7 @@ class LyricLayoutTest {
                     ) {
                         assertTrue(
                             "${previous.lyric} ends a staff with no hyphen: $context",
-                            layout.lyrics.any { it.neumeId == "lyric-hyphen-${previous!!.id}-${neume.id}" },
+                            layout.lyrics.any { it.neumeId == "lyric-hyphen-${previous.id}-${neume.id}" },
                         )
                     }
                     previous = neume
