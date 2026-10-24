@@ -350,7 +350,9 @@ class GregorianLayoutTest {
         val layout = GregorianEngravingLayoutEngine().layout(score, width = 390f)
 
         for (neume in layout.neumes) {
-            assertGreaterThanOrEqual(neume.hitFrame.width, 23.9f)
+            // Short words are set as close as the book sets them, nearer than a finger's width; their targets still meet,
+            // and a tap between two goes to the nearer.
+            assertGreaterThanOrEqual(neume.hitFrame.width, 20f)
             assertGreaterThanOrEqual(neume.hitFrame.height, 43.9f)
             // Swift's `XCTAssertFalse(neume.inkFrame.isNull)`: where Swift's ink frame stays CGRect.null (nothing was
             // drawn), the Kotlin port gives GregorianRect.Zero.

@@ -192,11 +192,24 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             0f
         }
 
-        val hyphenFontSize = lyricFontSize * AUTOMATIC_HYPHEN_SCALE
-        val hyphenWidth = measureLyric("-", fontSize = hyphenFontSize, fontName = lyricFontName)
-        val units = makeUnits(score, glyphScale, notationScale, lyricFontSize, lyricFontName, hyphenWidth, openingInitial)
-        val continuationAvailableWidth = columnWidth - sidePadding * 2 - clefColumn - custosColumn
-        val lines = breakLines(units, continuationAvailableWidth - initialColumn, continuationAvailableWidth, notationScale)
+        val hyphenWidth = measureLyric("-", fontSize = lyricFontSize, fontName = lyricFontName)
+        val spacing = Spacing(staffGap, hyphenWidth)
+        val units = makeUnits(score, glyphScale, notationScale, lyricFontSize, lyricFontName, openingInitial)
+        fun lineFrame(lineIndex: Int): LineFrame {
+            val staffLeft = sidePadding + if (lineIndex == 0) initialColumn else 0f
+            return LineFrame(
+                staffLeft = staffLeft,
+                notationStart = staffLeft + clefColumn + 4 * notationScale,
+                notationEnd = columnWidth - sidePadding - custosColumn,
+                textEnd = columnWidth - sidePadding,
+            )
+        }
+        val wordContinues = wordContinuation(units)
+        val lineRanges = breakLines(units, ::lineFrame, spacing, wordContinues)
+        val lines = lineRanges.map { units.subList(it.first, it.last + 1) }
+        val placements = lineRanges.mapIndexed { lineIndex, range ->
+            placeFitting(units, range, lineFrame(lineIndex), spacing, wordContinues[range.last + 1])
+        }
         val lineVerticalMetrics = lines.mapIndexed { lineIndex, lineUnits ->
             verticalMetrics(
                 lineUnits, custosPitch(lineIndex, lines), glyphScale, staffStep, staffGap, notationScale, lyricHeight,
@@ -218,6 +231,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         val events = mutableListOf<GregorianEventPlacement>()
         val rawNeumes = mutableListOf<RawNeumePlacement>()
         var activeClef = GregorianClef(GregorianClefKind.C, 4)
+        val punctumWidth = 100 * glyphScale
 
         for ((lineIndex, lineUnits) in lines.withIndex()) {
             val lineOriginY = lineOrigins[lineIndex]
@@ -225,8 +239,10 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             val staffTop = lineOriginY + lineMetrics.topInset
             val staffBottom = staffTop + staffGap * 3
             val staffCenter = (staffTop + staffBottom) / 2
-            val openingColumn = if (lineIndex == 0) initialColumn else 0f
-            val staffLeft = sidePadding + openingColumn
+            val frame = lineFrame(lineIndex)
+            val staffLeft = frame.staffLeft
+            val lyricY = staffBottom + lineMetrics.lyricOffset
+            val placement = placements[lineIndex]
             val firstEventId = lineUnits.firstNotNullOfOrNull { it.neume?.id }
             staffs += GregorianStaffLayout(
                 index = lineIndex,
@@ -269,19 +285,9 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                 )
             }
 
-            val availableWidth = continuationAvailableWidth - openingColumn
-            // The staff's last ink must stop short of the custos as well.
-            val neededWidth = lineUnits.fold(0f) { total, unit -> total + unit.width } + (lineUnits.lastOrNull()?.trailingInk ?: 0f)
-            val gapAdjustments = FloatArray(max(0, lineUnits.size - 1))
-            val condensibleGaps = condensibleGaps(lineUnits)
-            if (neededWidth > availableWidth && condensibleGaps.isNotEmpty()) {
-                val adjustment = max(-MAXIMUM_GAP_CONDENSATION * notationScale, (availableWidth - neededWidth) / condensibleGaps.size)
-                for (index in condensibleGaps) gapAdjustments[index] = adjustment
-            }
-            var x = staffLeft + clefColumn
-            var inkRight = x
-
+            var inkRight = frame.notationStart
             for ((unitIndex, unit) in lineUnits.withIndex()) {
+                val x = placement.x[unitIndex]
                 when (val element = unit.element) {
                     is GregorianNotationElement.Clef -> {
                         // The clefs a staff opens with are set at its head, and take no room in it.
@@ -291,15 +297,15 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                     }
                     is GregorianNotationElement.Accidental -> {
                         val y = staffCenter - (element.mark.pitch - 6) * staffStep
-                        glyphs += placedGlyph(accidentalKind(element.mark.kind), GregorianPoint(x + unit.anchorOffset, y), glyphScale * 0.9f)
+                        glyphs += placedGlyph(accidentalKind(element.mark.kind), GregorianPoint(x + unit.inkRight / 2, y), glyphScale * 0.9f)
                     }
                     is GregorianNotationElement.Division ->
-                        appendDivision(element.division, x + unit.anchorOffset, staffTop, staffGap, notationScale, strokes)
+                        appendDivision(element.division, x + unit.inkRight / 2, staffTop, staffGap, notationScale, strokes)
                     GregorianNotationElement.ForcedBreak -> Unit
                     is GregorianNotationElement.LyricMark -> lyrics += GregorianPlacedLyric(
                         text = element.mark.text,
                         style = element.mark.style,
-                        origin = GregorianPoint(x + unit.anchorOffset - unit.lyricFocus, staffBottom + lineMetrics.lyricOffset),
+                        origin = GregorianPoint(placement.lyricX[unitIndex] ?: x, lyricY),
                         width = unit.lyricWidth,
                         fontSize = lyricFontSize,
                         fontName = lyricFontName,
@@ -307,18 +313,20 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                     )
                     is GregorianNotationElement.Neume -> {
                         val neume = element.neume
-                        val notationLeft = x + unit.anchorOffset - unit.notationWidth / 2
-                        val composition = compose(neume, notationLeft, staffCenter, staffTop, staffBottom, staffStep, glyphScale, notationScale, lineIndex)
+                        val composition = compose(
+                            neume, x - punctumWidth / 2, staffCenter, staffTop, staffBottom, staffStep, glyphScale, notationScale, lineIndex,
+                        )
                         glyphs += composition.glyphs
                         strokes += composition.strokes
                         events += composition.events
                         inkRight = max(inkRight, inkRight(composition))
 
-                        if (unit.lyricText.isNotEmpty()) {
+                        val lyricX = placement.lyricX[unitIndex]
+                        if (unit.hasLyric && lyricX != null) {
                             lyrics += GregorianPlacedLyric(
                                 text = unit.lyricText,
                                 style = neume.lyricStyle,
-                                origin = GregorianPoint(x + unit.anchorOffset - unit.lyricFocus, staffBottom + lineMetrics.lyricOffset),
+                                origin = GregorianPoint(lyricX, lyricY),
                                 width = unit.lyricWidth,
                                 fontSize = lyricFontSize,
                                 fontName = lyricFontName,
@@ -335,8 +343,25 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                         }
                     }
                 }
-                x += unit.width
-                if (unitIndex in gapAdjustments.indices) x += gapAdjustments[unitIndex]
+            }
+
+            // The hyphen is the lyrics' own, set just after its syllable, whatever the gap that follows; one at the
+            // staff's end divides a word that goes on in the next.
+            for (unitIndex in placement.hyphenated) {
+                val unit = lineUnits[unitIndex]
+                val nextId = units.subList(lineRanges[lineIndex].first + unitIndex + 1, units.size)
+                    .firstOrNull { it.hasLyric }?.lyricId
+                val lyricX = placement.lyricX[unitIndex]
+                val id = unit.lyricId
+                if (lyricX == null || id == null || nextId == null) continue
+                lyrics += GregorianPlacedLyric(
+                    text = "-",
+                    origin = GregorianPoint(lyricX + unit.lyricWidth, lyricY),
+                    width = hyphenWidth,
+                    fontSize = lyricFontSize,
+                    fontName = lyricFontName,
+                    neumeId = "lyric-hyphen-$id-$nextId",
+                )
             }
 
             val custosPitch = custosPitch(lineIndex, lines)
@@ -353,9 +378,6 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             }
         }
 
-        lyrics += automaticLyricHyphens(
-            lines, lyrics, columnWidth, sidePadding, notationScale, lyricFontSize, lyricFontName, hyphenFontSize, hyphenWidth,
-        )
         strokes = mergeLedgerLines(strokes, notationScale).toMutableList()
         val neumes = makeHitFrames(rawNeumes, columnWidth, notationScale)
         return GregorianLayout(
@@ -370,129 +392,90 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         )
     }
 
-    private fun automaticLyricHyphens(
-        lines: List<List<LayoutUnit>>,
-        lyrics: List<GregorianPlacedLyric>,
-        width: Float,
-        sidePadding: Float,
-        notationScale: Float,
-        lyricFontSize: Float,
-        lyricFontName: String,
-        hyphenFontSize: Float,
-        hyphenWidth: Float,
-    ): List<GregorianPlacedLyric> {
-        class Syllable(val unit: LayoutUnit, val neume: GregorianNeume, val lyric: GregorianPlacedLyric)
+    /** How a syllable's lyric meets the lyric before it. */
+    private enum class LyricJoin {
+        /** It begins a word, or follows a rubric: a word's space parts them. */
+        Word,
 
-        val lyricsByNeumeId = lyrics.associateBy { it.neumeId }
-        val syllablesByLine = lines.map { line ->
-            line.mapNotNull { unit ->
-                val neume = unit.neume ?: return@mapNotNull null
-                if (unit.lyricText.isEmpty()) return@mapNotNull null
-                val lyric = lyricsByNeumeId[neume.id] ?: return@mapNotNull null
-                Syllable(unit, neume, lyric)
-            }
-        }
-        val hyphenText = "-"
-        val minimumInlineHyphenGap = hyphenWidth - notationScale
-        val minimumUnreservedHyphenGap = hyphenWidth + 1.5f * notationScale
-        val lineEndClearance = max(1f, 1.5f * notationScale)
-        val hyphens = mutableListOf<GregorianPlacedLyric>()
+        /** It is the next syllable of the word: joined to the one before, or parted from it by one hyphen. */
+        Syllable,
 
-        fun boundaryWordHasMultipleSyllables(previous: Syllable, next: Syllable): Boolean {
-            val left = previous.unit.lyricText.split(SPACES).lastOrNull { it.isNotEmpty() }?.filter(Char::isLetter).orEmpty()
-            val right = next.unit.lyricText.split(SPACES).firstOrNull { it.isNotEmpty() }?.filter(Char::isLetter).orEmpty()
-            val folded = Normalizer.normalize(left + right, Normalizer.Form.NFD)
-                .replace(COMBINING_MARKS, "")
-                .lowercase()
-                .replace("æ", "ae")
-                .replace("œ", "oe")
-            val vowels = "aeiouy"
-            var nuclei = 0
-            var index = 0
-            while (index < folded.length) {
-                val letter = folded[index]
-                if (letter !in vowels) {
-                    index += 1
-                    continue
-                }
-                if (letter == 'u' && index > 0 && folded[index - 1] == 'q') {
-                    index += 1
-                    continue
-                }
-                nuclei += 1
-                index += if (index + 1 < folded.length && folded.substring(index, index + 2) in DIPHTHONGS) 2 else 1
-            }
-            return nuclei > 1
-        }
-
-        fun shouldHyphenate(previous: Syllable, next: Syllable): Boolean =
-            next.unit.hyphenatesFromPrevious &&
-                previous.neume.syllableId != next.neume.syllableId &&
-                !previous.unit.lyricText.endsWith("-") &&
-                !next.unit.lyricText.startsWith("-") &&
-                boundaryWordHasMultipleSyllables(previous, next)
-
-        fun makeHyphen(previous: Syllable, next: Syllable, originX: Float): GregorianPlacedLyric {
-            val verticalOffset = (lyricFontSize - hyphenFontSize) * LYRIC_LINE_HEIGHT_MULTIPLIER / 2
-            return GregorianPlacedLyric(
-                text = hyphenText,
-                origin = GregorianPoint(originX, previous.lyric.origin.y + verticalOffset),
-                width = hyphenWidth,
-                fontSize = hyphenFontSize,
-                fontName = lyricFontName,
-                neumeId = "lyric-hyphen-${previous.neume.id}-${next.neume.id}",
-            )
-        }
-
-        for (syllables in syllablesByLine) {
-            for ((previous, next) in syllables.zipWithNext()) {
-                if (!shouldHyphenate(previous, next)) continue
-                val gapStart = previous.lyric.origin.x + previous.lyric.width
-                val gapEnd = next.lyric.origin.x
-                val availableWidth = gapEnd - gapStart
-                // The unit-building pass reserves a connector lane when the intrinsic musical spacing predicts one.
-                // The placed lyrics are checked again, since wide neumes can leave more daylight than the intrinsic
-                // pair promised.
-                val hasReservedLane = next.unit.showsInlineHyphenFromPrevious
-                val fits = if (hasReservedLane) availableWidth >= minimumInlineHyphenGap else availableWidth >= minimumUnreservedHyphenGap
-                if (!fits) continue
-                hyphens += makeHyphen(previous, next, gapStart + (availableWidth - hyphenWidth) / 2)
-            }
-        }
-
-        if (syllablesByLine.size <= 1) return hyphens
-        // The custos occupies the staff, while this mark is on the lyric baseline, so the custos's column is free for it.
-        val lineEnd = width - sidePadding
-        for (lineIndex in 0 until syllablesByLine.size - 1) {
-            val previous = syllablesByLine[lineIndex].lastOrNull() ?: continue
-            val next = syllablesByLine[lineIndex + 1].firstOrNull() ?: continue
-            if (!shouldHyphenate(previous, next)) continue
-            val gapStart = previous.lyric.origin.x + previous.lyric.width
-            if (lineEnd - gapStart < hyphenWidth + lineEndClearance) continue
-            hyphens += makeHyphen(previous, next, gapStart + lineEndClearance)
-        }
-        return hyphens
+        /** One of the two writes its own hyphen at the join: they may touch, and take no other. */
+        Written,
     }
 
     private class LayoutUnit(
         val element: GregorianNotationElement,
-        val width: Float,
-        val anchorOffset: Float,
-        val notationWidth: Float,
+        /**
+         * The unit's ink, reckoned from where it is placed: a neume's from the centre of its first note, a clef's, an
+         * accidental's or a division's from the left of the room it takes, which runs to [inkRight].
+         */
+        val inkLeft: Float,
+        val inkRight: Float,
         val lyricText: String,
         val lyricWidth: Float,
+        /** From the lyric's left edge to the centre of its sung vowel. */
         val lyricFocus: Float,
-        val hyphenatesFromPrevious: Boolean,
-        val showsInlineHyphenFromPrevious: Boolean,
+        val join: LyricJoin,
         val breakPenalty: Int,
         val forcesBreak: Boolean,
-        /**
-         * How far the unit's ink (a dot after its last note, an episema, a ledger line) reaches beyond the room the
-         * unit takes. Whatever follows on the staff has room for it; the end of the staff has not.
-         */
-        val trailingInk: Float = 0f,
     ) {
         val neume: GregorianNeume? get() = (element as? GregorianNotationElement.Neume)?.neume
+
+        val hasLyric: Boolean get() = lyricText.isNotEmpty()
+
+        val lyricId: String?
+            get() = when (element) {
+                is GregorianNotationElement.Neume -> element.neume.id
+                is GregorianNotationElement.LyricMark -> element.mark.id
+                else -> null
+            }
+    }
+
+    /**
+     * The room a staff gives its notes and words: where the first note may stand, clear of the clef; where the notes
+     * must end, short of the custos; and where the words must end, which may run on under the custos.
+     */
+    private class LineFrame(val staffLeft: Float, val notationStart: Float, val notationEnd: Float, val textEnd: Float)
+
+    /**
+     * A staff's units, set in place: each unit's place, from which its `inkLeft` and `inkRight` are reckoned; the left
+     * edge of each unit's lyric; and the units whose syllable a hyphen follows, within the staff or at its end.
+     */
+    private class LinePlacement(
+        val x: FloatArray,
+        val lyricX: Array<Float?>,
+        var notationRight: Float,
+        var textRight: Float,
+    ) {
+        val hyphenated: MutableList<Int> = mutableListOf()
+
+        fun fits(frame: LineFrame): Boolean =
+            notationRight <= frame.notationEnd + 0.01f && textRight <= frame.textEnd + 0.01f
+    }
+
+    /**
+     * The spaces a staff keeps between its notes and between its words, in points: Exsurge's, reckoned from the staff
+     * space. [word] is the least space between two words' texts; [hyphen], a hyphen's
+     * advance, the least space between two syllables of a word that do not touch.
+     */
+    private class Spacing(staffSpace: Float, val hyphen: Float) {
+        /** Between the neumes of one syllable. */
+        val withinSyllable = 0.25f * staffSpace
+
+        /** Between one syllable's notes and the next's, within a word. */
+        val betweenSyllables = 0.625f * staffSpace
+
+        /** Between one word's notes and the next's. */
+        val betweenWords = 0.875f * staffSpace
+
+        /** After a bar, beyond the half of its room that follows its line. */
+        val afterDivision = 0.25f * staffSpace
+
+        /** Before a clef within the staff. */
+        val beforeClef = 0.5f * staffSpace
+
+        val word = max(hyphen, 0.5f * staffSpace)
     }
 
     private class RawNeumePlacement(
@@ -583,150 +566,107 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         notationScale: Float,
         lyricFontSize: Float,
         lyricFontName: String,
-        hyphenWidth: Float,
         openingInitial: OpeningInitial?,
     ): List<LayoutUnit> {
-        var hasEngravedContent = false
         var previousWasAccidental = false
         var previousWasLyricMark = false
-        var previousLyricSyllableId: String? = null
+        // The last lyric written, and the syllable it was sung on: none for a rubric, which ends any word before it.
         var previousLyricText: String? = null
-        var previousLyricNotationHalf: Float? = null
-        var previousLyricRightExtent: Float? = null
-        var interveningNotationWidth = 0f
-        var interveningUnitCount = 0
-        // Exsurge starts with normal inter-syllabic notation spacing, then joins lyric fragments only when they would
-        // collide after modest condensation. The collision test is kept conservative with EB Garamond's metrics; the
-        // later line pass can still condense ordinary (non-connector) gaps further. A connector is kept when the
-        // musical spacing still leaves daylight between the fragments.
-        val interSyllabicSpacing = 7.8125f * notationScale
-        val condensedInterSyllabicSpacing = interSyllabicSpacing * 0.8f
-        val lyricCollisionTolerance = 0.1f * notationScale
+        var previousLyricSyllableId: String? = null
+        val punctum = 100 * glyphScale
 
-        fun countIntervening(width: Float) {
-            if (previousLyricText != null) {
-                interveningNotationWidth += width
-                interveningUnitCount += 1
-            }
-        }
+        fun unit(
+            element: GregorianNotationElement,
+            inkRight: Float,
+            breakPenalty: Int,
+            inkLeft: Float = 0f,
+            lyricText: String = "",
+            lyricWidth: Float = 0f,
+            lyricFocus: Float = 0f,
+            join: LyricJoin = LyricJoin.Word,
+            forcesBreak: Boolean = false,
+        ) = LayoutUnit(element, inkLeft, inkRight, lyricText, lyricWidth, lyricFocus, join, breakPenalty, forcesBreak)
 
         return score.elements.map { element ->
             when (element) {
                 is GregorianNotationElement.Clef -> {
                     previousWasAccidental = false
                     previousWasLyricMark = false
-                    val width = if (hasEngravedContent) 24 * notationScale else 0f
-                    countIntervening(width)
-                    LayoutUnit(element, width, 0f, 18 * notationScale, "", 0f, 0f, false, false, breakPenalty = 1000, forcesBreak = false)
+                    unit(element, inkRight = 24 * notationScale, breakPenalty = 1000)
                 }
                 is GregorianNotationElement.Accidental -> {
-                    hasEngravedContent = true
                     previousWasAccidental = true
                     previousWasLyricMark = false
                     val definition = GregorianGlyphCatalog.definition(accidentalKind(element.mark.kind).catalogName)
-                    val width = definition.bounds.width * glyphScale * 0.9f + 4 * notationScale
-                    countIntervening(width)
                     // Wrapping is permitted before an accidental, but never between the accidental and the neume it
                     // governs.
-                    LayoutUnit(element, width, width / 2, width, "", 0f, 0f, false, false, breakPenalty = 18, forcesBreak = false)
+                    unit(element, inkRight = definition.bounds.width * glyphScale * 0.9f + 4 * notationScale, breakPenalty = 18)
                 }
                 is GregorianNotationElement.Division -> {
-                    hasEngravedContent = true
                     previousWasAccidental = false
                     previousWasLyricMark = false
-                    val width = (if (element.division == GregorianDivision.Final) 17 else 12) * notationScale
-                    countIntervening(width)
                     // A division belongs at the end of a phrase, not at the beginning of the next staff. The following
                     // word offers the usable break after the bar.
-                    LayoutUnit(element, width, width / 2, width, "", 0f, 0f, false, false, breakPenalty = 1000, forcesBreak = false)
+                    unit(element, inkRight = (if (element.division == GregorianDivision.Final) 17 else 12) * notationScale, breakPenalty = 1000)
                 }
                 GregorianNotationElement.ForcedBreak -> {
                     previousWasAccidental = false
                     previousWasLyricMark = false
-                    LayoutUnit(element, 0f, 0f, 0f, "", 0f, 0f, false, false, breakPenalty = 0, forcesBreak = true)
+                    unit(element, inkRight = 0f, breakPenalty = 0, forcesBreak = true)
                 }
                 is GregorianNotationElement.LyricMark -> {
-                    hasEngravedContent = true
                     previousWasAccidental = false
                     previousWasLyricMark = true
-                    val lyric = lyricMetrics(element.mark.text, element.mark.style, lyricFontSize, lyricFontName)
-                    val leadingPadding = (if (element.mark.startsWord) 5 else 2) * notationScale
-                    val trailingPadding = 5 * notationScale
-                    val width = leadingPadding + lyric.width + trailingPadding
-                    countIntervening(width)
+                    previousLyricText = element.mark.text
+                    previousLyricSyllableId = null
                     // A rubric without notes belongs between the syllables beside it, and shouldn't begin a staff.
-                    LayoutUnit(
-                        element, width, leadingPadding + lyric.focus, 0f, element.mark.text, lyric.width, lyric.focus,
-                        false, false, breakPenalty = 1000, forcesBreak = false,
+                    unit(
+                        element,
+                        inkRight = 0f,
+                        breakPenalty = 1000,
+                        lyricText = element.mark.text,
+                        lyricWidth = measureLyric(element.mark.text, element.mark.style, lyricFontSize, lyricFontName),
                     )
                 }
                 is GregorianNotationElement.Neume -> {
                     val neume = element.neume
-                    hasEngravedContent = true
                     val followsUnbreakableElement = previousWasAccidental || previousWasLyricMark
-                    val notationWidth = estimatedNotationWidth(neume, glyphScale)
-                    val lyricText = if (openingInitial != null && openingInitial.neumeId == neume.id) openingInitial.remainder else neume.lyric
-                    val followsDifferentSyllable = previousLyricSyllableId?.let { it != neume.syllableId } ?: false
-                    val followsExplicitHyphen = previousLyricText?.endsWith("-") ?: false
-                    val hyphenatesFromPrevious = lyricText.isNotEmpty() && !neume.startsWord && !previousWasLyricMark &&
-                        followsDifferentSyllable && !followsExplicitHyphen && !lyricText.startsWith("-")
                     previousWasAccidental = false
                     previousWasLyricMark = false
-                    val lyric = lyricMetrics(lyricText, neume.lyricStyle, lyricFontSize, lyricFontName)
-                    val notationHalf = notationWidth / 2
-                    val leftExtent = max(notationHalf, lyric.focus)
-                    val rightExtent = max(notationHalf, lyric.width - lyric.focus)
-                    val leadingPadding: Float
-                    val showsInlineHyphenFromPrevious: Boolean
-                    if (neume.startsWord) {
-                        leadingPadding = 5 * notationScale
-                        showsInlineHyphenFromPrevious = false
+                    val opensScore = openingInitial != null && openingInitial.neumeId == neume.id
+                    val lyricText = if (opensScore) openingInitial!!.remainder else neume.lyric
+                    // The opening initial takes the syllable's first letter.
+                    val centeredRange = if (opensScore) {
+                        neume.centeredRange?.let { if (it.first >= 1) (it.first - 1)..(it.last - 1) else null }
                     } else {
-                        val condensedNaturalDistance = previousLyricNotationHalf?.let {
-                            it + condensedInterSyllabicSpacing + interveningNotationWidth + notationHalf
-                        }
-                        val lyricTouchDistance = previousLyricRightExtent?.let { it + leftExtent }
-                        val needsConnector = if (hyphenatesFromPrevious && condensedNaturalDistance != null && lyricTouchDistance != null) {
-                            condensedNaturalDistance - lyricTouchDistance > lyricCollisionTolerance || interveningUnitCount > 0
-                        } else {
-                            false
-                        }
-                        showsInlineHyphenFromPrevious = needsConnector
-                        val previousNotationHalf = previousLyricNotationHalf
-                        val previousRightExtent = previousLyricRightExtent
-                        leadingPadding = if (needsConnector && previousNotationHalf != null && previousRightExtent != null) {
-                            val naturalDistance = previousNotationHalf + interSyllabicSpacing + interveningNotationWidth + notationHalf
-                            val naturalGap = naturalDistance - previousRightExtent - leftExtent
-                            // Line fitting may condense every intervening boundary. That allowance is reserved as part
-                            // of the connector's lane, so melismas do not squeeze the hyphen back out once it's chosen.
-                            max(hyphenWidth + 2.5f * notationScale * interveningUnitCount, naturalGap)
-                        } else {
-                            0f
-                        }
+                        neume.centeredRange
                     }
-                    val contentWidth = leadingPadding + leftExtent + rightExtent
-                    val width = if (neume.startsWord) max(24 * notationScale, contentWidth) else contentWidth
-                    val centeringInset = (width - contentWidth) / 2
-                    val anchorOffset = centeringInset + leadingPadding + leftExtent
-                    val trailingInk = max(0f, anchorOffset - notationWidth / 2 + notationInkRight(neume, glyphScale, notationScale) - width)
+                    val lyric = lyricMetrics(lyricText, neume.lyricStyle, centeredRange, lyricFontSize, lyricFontName)
+                    val previousSyllable = previousLyricSyllableId
+                    val join = if (lyricText.isNotEmpty() && !neume.startsWord && previousSyllable != null &&
+                        previousSyllable != neume.syllableId
+                    ) {
+                        if (previousLyricText?.endsWith("-") == true || lyricText.startsWith("-")) LyricJoin.Written else LyricJoin.Syllable
+                    } else {
+                        LyricJoin.Word
+                    }
                     if (lyricText.isNotEmpty()) {
-                        previousLyricSyllableId = neume.syllableId
                         previousLyricText = lyricText
-                        previousLyricNotationHalf = notationHalf
-                        previousLyricRightExtent = rightExtent
-                        interveningNotationWidth = 0f
-                        interveningUnitCount = 0
-                    } else {
-                        countIntervening(width)
+                        previousLyricSyllableId = neume.syllableId
                     }
-                    LayoutUnit(
-                        element, width, anchorOffset, notationWidth, lyricText, lyric.width, lyric.focus,
-                        hyphenatesFromPrevious, showsInlineHyphenFromPrevious,
+                    val ink = notationInk(neume, glyphScale, notationScale)
+                    unit(
+                        element,
+                        // A neume is placed by its first note's centre, under which its syllable's vowel stands.
+                        inkLeft = ink.first - punctum / 2,
+                        inkRight = ink.second - punctum / 2,
+                        lyricText = lyricText,
+                        lyricWidth = lyric.width,
+                        lyricFocus = lyric.focus,
+                        join = join,
                         // Chant may wrap between syllables when that produces a fuller staff (for example "pró-" /
                         // "ximos"). A custos, like a division, belongs at the end of what it follows.
                         breakPenalty = if (followsUnbreakableElement || neume.writtenNoteCount == 0) 1000 else 18,
-                        forcesBreak = false,
-                        trailingInk = trailingInk,
                     )
                 }
             }
@@ -744,92 +684,268 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         }
     }
 
-    private fun estimatedNotationWidth(neume: GregorianNeume, glyphScale: Float): Float {
-        val punctum = 100 * glyphScale
-        if (neume.notes.size == 1 && neume.notes[0].isCustos) {
-            return GregorianGlyphCatalog.definition(GregorianGlyphName.CustosShort).bounds.width * glyphScale
-        }
-        // A note written twice or thrice draws a glyph for each.
-        val repeated = neume.notes.sumOf { it.repetitionCount - 1 }
-        return formNotationWidth(neume, punctum, glyphScale) + repeated * punctum * REPEATED_NOTE_ADVANCE
-    }
-
-    private fun formNotationWidth(neume: GregorianNeume, punctum: Float, glyphScale: Float): Float = when (neume.form) {
-        GregorianNeumeForm.Podatus, GregorianNeumeForm.PesQuassus -> punctum * 1.15f
-        GregorianNeumeForm.Porrectus, GregorianNeumeForm.PorrectusFlexus -> {
-            val swash = GregorianGlyphCatalog.definition(porrectusSwash(neume)).bounds.width * glyphScale
-            swash + punctum * max(1, neume.notes.size - 2)
-        }
-        GregorianNeumeForm.Climacus, GregorianNeumeForm.Ancus, GregorianNeumeForm.PunctaInclinata ->
-            punctum + max(0, neume.notes.size - 1) * punctum * 0.72f
-        else -> punctum + max(0, neume.notes.size - 1) * punctum * 0.92f
-    }
-
-    /** How far a neume's ink reaches to the right of where its notation begins: its notes, with their dots, episemata and ledger lines. */
-    private fun notationInkRight(neume: GregorianNeume, glyphScale: Float, notationScale: Float): Float {
+    /** A neume's ink, from where its notation begins: its notes, with their dots, episemata and ledger lines. */
+    private fun notationInk(neume: GregorianNeume, glyphScale: Float, notationScale: Float): Pair<Float, Float> {
         val staffStep = 100 * glyphScale
         val staffGap = staffStep * 2
         val composition = compose(
             neume, originX = 0f, staffCenter = staffGap * 1.5f, staffTop = 0f, staffBottom = staffGap * 3, staffStep = staffStep,
             glyphScale = glyphScale, notationScale = notationScale, lineIndex = 0,
         )
-        return max(0f, inkRight(composition))
+        val left = inkLeft(composition)
+        val right = inkRight(composition)
+        if (left == Float.MAX_VALUE || right == -Float.MAX_VALUE || right <= left) return 0f to staffStep
+        return left to right
     }
 
+    /**
+     * Sets a staff's units in place. Each is set after the notation before it, by the space its syllable and word call
+     * for, and moved on as far as its lyric must go to clear the lyric before it: by a word's space, or, within a word,
+     * to touch it. A syllable that the notes would part from the one before is joined to it if the note spaces since
+     * may close up so far, and is otherwise parted from it by one hyphen. A full staff gives up [condensation] of the
+     * share of each note space that it may.
+     */
+    private fun place(
+        units: List<LayoutUnit>,
+        range: IntRange,
+        frame: LineFrame,
+        spacing: Spacing,
+        condensation: Float,
+        endsWithinWord: Boolean,
+    ): LinePlacement {
+        val base = range.first
+        val count = range.last - range.first + 1
+        val result = LinePlacement(FloatArray(count), arrayOfNulls(count), frame.notationStart, frame.staffLeft)
+        var previousNotation: Int? = null
+        var previousLyric: Int? = null
+        var lyricRight: Float? = null
+        // Where the next text may begin: the staff's left, or a bar's line.
+        var textFloor = frame.staffLeft
+        var crossedDivision = false
+        // The note spaces since the last lyric, each with the share of it still to give up: a syllable may close them
+        // to join the one before.
+        val run = mutableListOf<Pair<Int, Float>>()
+        var leadingClefs = true
+        val kept = 1 - CONDENSABLE * condensation
+
+        fun space(index: Int): Float {
+            val previousIndex = previousNotation ?: return 0f
+            val previous = units[base + previousIndex].element
+            if (previous is GregorianNotationElement.Division) return spacing.afterDivision
+            val previousNeume = (previous as? GregorianNotationElement.Neume)?.neume ?: return 0f
+            var next = units[base + index].element
+            if (next is GregorianNotationElement.Accidental && index + 1 < count) {
+                // An accidental takes the space of the neume it governs.
+                next = units[base + index + 1].element
+            }
+            return when (next) {
+                is GregorianNotationElement.Neume -> when {
+                    // A quilisma is sung from the note before it.
+                    next.neume.syllableId == previousNeume.syllableId ->
+                        if (next.neume.notes.firstOrNull()?.shape == GregorianNoteShape.Quilisma) 0f else spacing.withinSyllable
+                    next.neume.startsWord -> spacing.betweenWords
+                    else -> spacing.betweenSyllables
+                }
+                is GregorianNotationElement.Clef -> spacing.beforeClef
+                is GregorianNotationElement.Accidental -> spacing.betweenSyllables
+                else -> 0f
+            }
+        }
+
+        for (index in 0 until count) {
+            val unit = units[base + index]
+            when (unit.element) {
+                GregorianNotationElement.ForcedBreak -> continue
+                is GregorianNotationElement.Clef, is GregorianNotationElement.Accidental -> {
+                    if (unit.element is GregorianNotationElement.Clef && leadingClefs) {
+                        // Drawn at the staff's start, with the clef it sets.
+                        result.x[index] = frame.staffLeft
+                        continue
+                    }
+                    leadingClefs = false
+                    val natural = space(index)
+                    val left = if (previousNotation == null) frame.notationStart else result.notationRight + natural * kept
+                    result.x[index] = max(left, frame.notationStart)
+                    result.notationRight = result.x[index] + unit.inkRight
+                    run += index to natural * CONDENSABLE * (1 - condensation)
+                    previousNotation = index
+                }
+                is GregorianNotationElement.Division -> {
+                    leadingClefs = false
+                    // A bar follows its syllable's words as well as its notes.
+                    val left = max(
+                        if (previousNotation == null) frame.notationStart else result.notationRight,
+                        lyricRight ?: frame.notationStart,
+                    )
+                    result.x[index] = left
+                    result.notationRight = left + unit.inkRight
+                    textFloor = max(textFloor, left + unit.inkRight / 2)
+                    crossedDivision = true
+                    run += index to 0f
+                    previousNotation = index
+                }
+                is GregorianNotationElement.LyricMark -> {
+                    leadingClefs = false
+                    var left = max(
+                        textFloor,
+                        if (previousNotation == null) frame.staffLeft else result.notationRight + spacing.withinSyllable,
+                    )
+                    lyricRight?.let { left = max(left, it + spacing.word) }
+                    result.x[index] = left
+                    result.lyricX[index] = left
+                    lyricRight = left + unit.lyricWidth
+                    result.notationRight = max(result.notationRight, left + unit.lyricWidth)
+                    previousLyric = index
+                    previousNotation = index
+                    crossedDivision = false
+                    run.clear()
+                }
+                is GregorianNotationElement.Neume -> {
+                    leadingClefs = false
+                    val natural = space(index)
+                    val spare = natural * CONDENSABLE * (1 - condensation)
+                    val start = if (previousNotation == null) frame.notationStart else result.notationRight + natural * kept
+                    var position = max(start, frame.notationStart) - unit.inkLeft
+                    if (unit.hasLyric) {
+                        val floor = textFloor + unit.lyricFocus
+                        val right = lyricRight
+                        val previous = previousLyric
+                        if (right != null && previous != null) {
+                            val solid = right + unit.lyricFocus
+                            when {
+                                unit.join == LyricJoin.Word -> position = max(position, max(solid + spacing.word, floor))
+                                unit.join == LyricJoin.Written -> position = max(position, max(solid, floor))
+                                crossedDivision -> {
+                                    // A bar within a word parts its syllables.
+                                    position = max(position, max(solid + spacing.hyphen, floor))
+                                    result.hyphenated += previous
+                                }
+                                else -> {
+                                    val opening = position - solid
+                                    val closable = run.fold(spare) { total, entry -> total + entry.second }
+                                    if (opening <= TOUCHING) {
+                                        position = max(position, solid)
+                                    } else if (opening <= closable + TOUCHING) {
+                                        // Close up the notes since the syllable before, each space by its share, till
+                                        // the two meet.
+                                        val shift = min(opening, closable)
+                                        var given = 0f
+                                        for ((entryIndex, entrySpare) in run) {
+                                            given += entrySpare
+                                            result.x[entryIndex] -= shift * given / closable
+                                        }
+                                        position -= shift
+                                    } else {
+                                        position = max(position, solid + spacing.hyphen)
+                                        result.hyphenated += previous
+                                    }
+                                }
+                            }
+                        } else {
+                            position = max(position, floor)
+                        }
+                    }
+                    result.x[index] = position
+                    result.notationRight = position + unit.inkRight
+                    // An accidental stands just before the neume it governs.
+                    val before = previousNotation
+                    if (before != null && units[base + before].element is GregorianNotationElement.Accidental) {
+                        result.x[before] = position + unit.inkLeft - units[base + before].inkRight
+                    }
+                    if (unit.hasLyric) {
+                        val left = position - unit.lyricFocus
+                        result.lyricX[index] = left
+                        lyricRight = left + unit.lyricWidth
+                        previousLyric = index
+                        crossedDivision = false
+                        run.clear()
+                    } else {
+                        run += index to spare
+                    }
+                    previousNotation = index
+                }
+            }
+        }
+
+        // A word that goes on in the next staff ends this one with a hyphen.
+        val last = previousLyric
+        val right = lyricRight
+        if (endsWithinWord && last != null && right != null && units[base + last].neume != null) {
+            result.hyphenated += last
+            lyricRight = right + spacing.hyphen
+        }
+        result.textRight = lyricRight ?: frame.staffLeft
+        return result
+    }
+
+    /** Sets a staff in place with its notes at their natural spacing, or, if they do not fit so, closed up by as little as fits them. */
+    private fun placeFitting(
+        units: List<LayoutUnit>,
+        range: IntRange,
+        frame: LineFrame,
+        spacing: Spacing,
+        endsWithinWord: Boolean,
+    ): LinePlacement {
+        fun placed(condensation: Float) = place(units, range, frame, spacing, condensation, endsWithinWord)
+        val natural = placed(0f)
+        if (natural.fits(frame)) return natural
+        var best = placed(1f)
+        if (!best.fits(frame)) return best
+        var low = 0f
+        var high = 1f
+        repeat(10) {
+            val middle = (low + high) / 2
+            val attempt = placed(middle)
+            if (attempt.fits(frame)) {
+                high = middle
+                best = attempt
+            } else {
+                low = middle
+            }
+        }
+        return best
+    }
+
+    /**
+     * Breaks the units into staffs: each takes as many as fit it with its notes closed up as far as they may be, and
+     * then breaks where it best may, in its latter half.
+     */
     private fun breakLines(
         units: List<LayoutUnit>,
-        firstAvailableWidth: Float,
-        continuationAvailableWidth: Float,
-        notationScale: Float,
-    ): List<List<LayoutUnit>> {
-        if (units.isEmpty()) return listOf(emptyList())
-        class Candidate(val index: Int, val penalty: Int)
-
-        val lines = mutableListOf<List<LayoutUnit>>()
-        var current = mutableListOf<LayoutUnit>()
-        var currentWidth = 0f
-        var candidates = mutableListOf<Candidate>()
-
-        fun availableWidth() = if (lines.isEmpty()) firstAvailableWidth else continuationAvailableWidth
-
-        fun commit(count: Int? = null) {
-            val split = count ?: current.size
-            val prefix = current.take(split).filter { it.element !is GregorianNotationElement.ForcedBreak }
-            if (prefix.isNotEmpty()) lines += prefix
-            current = current.drop(split).toMutableList()
-            currentWidth = current.fold(0f) { total, unit -> total + unit.width }
-            candidates = current.withIndex().mapNotNull { (index, unit) ->
-                if (index > 0 && current.take(index).any { it.neume != null }) Candidate(index, unit.breakPenalty) else null
-            }.toMutableList()
-        }
-
-        for (unit in units) {
-            current += unit
-            currentWidth += unit.width
-            val splitBeforeUnit = current.size - 1
-            if (splitBeforeUnit > 0 && current.take(splitBeforeUnit).any { it.neume != null }) {
-                candidates += Candidate(splitBeforeUnit, unit.breakPenalty)
+        frame: (Int) -> LineFrame,
+        spacing: Spacing,
+        wordContinues: BooleanArray,
+    ): List<IntRange> {
+        if (units.isEmpty()) return listOf(0 until 0)
+        val lines = mutableListOf<IntRange>()
+        var start = 0
+        while (start < units.size) {
+            val lineFrame = frame(lines.size)
+            var end = start
+            var split: Int? = null
+            while (end < units.size) {
+                val unit = units[end]
+                end += 1
+                if (unit.forcesBreak) {
+                    split = end
+                    break
+                }
+                if (end - start <= 1) continue
+                // Condensation is permitted before wrapping, as Exsurge permits it.
+                if (place(units, start until end, lineFrame, spacing, 1f, wordContinues[end]).fits(lineFrame)) continue
+                val fallback = end - 1
+                val earliest = start + max(1, (fallback - start) / 2)
+                split = (earliest..fallback)
+                    .filter { candidate -> (start until candidate).any { units[it].neume != null } }
+                    .minWithOrNull(compareBy<Int> { units[it].breakPenalty }.thenByDescending { it })
+                    ?: fallback
+                break
             }
-            // A staff must hold its last ink too: a dot after the final note would otherwise fall beyond the custos.
-            val neededWidth = currentWidth + unit.trailingInk
-            if (unit.forcesBreak) {
-                commit()
-            } else if (neededWidth > availableWidth() && current.size > 1) {
-                // Modest condensation is permitted before wrapping, as Exsurge permits it, but no more than the staff
-                // will in fact be closed up.
-                val condensible = condensibleGaps(current).size * MAXIMUM_GAP_CONDENSATION * notationScale
-                if (neededWidth - availableWidth() <= condensible) continue
-                val fallback = current.size - 1
-                val earliest = max(1, fallback / 2)
-                val split = candidates
-                    .filter { it.index >= earliest && it.index < current.size }
-                    .minWithOrNull(compareBy<Candidate> { it.penalty }.thenByDescending { it.index })
-                    ?.index ?: fallback
-                commit(split)
-            }
+            val upper = split ?: end
+            lines += start until upper
+            start = upper
         }
-        commit()
-        return lines.ifEmpty { listOf(emptyList()) }
+        return lines
     }
 
     private fun compose(
@@ -1107,27 +1223,35 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
 
     private class LyricMetrics(val width: Float, val focus: Float)
 
-    /** A lyric's width, and the middle of its vowel, which the neume above it is centred on. */
-    private fun lyricMetrics(lyric: String, style: GregorianLyricStyle, fontSize: Float, fontName: String): LyricMetrics {
+    /**
+     * A lyric's width, and the middle of the letters its first note stands over: those a brace pair marks, or its sung
+     * vowel.
+     */
+    private fun lyricMetrics(
+        lyric: String,
+        style: GregorianLyricStyle,
+        centeredRange: IntRange?,
+        fontSize: Float,
+        fontName: String,
+    ): LyricMetrics {
         if (lyric.isEmpty()) return LyricMetrics(0f, 0f)
         val width = measureLyric(lyric, style, fontSize, fontName)
         val characters = graphemes(lyric)
-        fun isVowel(cluster: String) = cluster.any { it in VOWELS }
-        val nucleusStart = characters.indexOfFirst(::isVowel).let { if (it < 0) 0 else it }
-        var nucleusEnd = nucleusStart
-        while (nucleusEnd + 1 < characters.size && isVowel(characters[nucleusEnd + 1])) nucleusEnd += 1
-        val prefix = characters.take(nucleusStart).joinToString("")
-        val nucleus = characters.subList(nucleusStart, nucleusEnd + 1).joinToString("")
+        val centre = centeredRange?.takeIf { it.first >= 0 && it.last < characters.size && !it.isEmpty() }
+            ?: sungVowel(characters)
+        val prefix = characters.take(centre.first).joinToString("")
+        val nucleus = characters.subList(centre.first, centre.last + 1).joinToString("")
         val focus = measureLyric(prefix, style, fontSize, fontName) + measureLyric(nucleus, style, fontSize, fontName) / 2
         return LyricMetrics(width, focus)
     }
 
+    // Measured exactly: syllables of a word set solid meet exactly.
     private fun measureLyric(
         lyric: String,
         style: GregorianLyricStyle = GregorianLyricStyle.Regular,
         fontSize: Float,
         fontName: String,
-    ): Float = if (lyric.isEmpty()) 0f else ceil(measurer.width(lyric, style, fontSize, fontName))
+    ): Float = if (lyric.isEmpty()) 0f else measurer.width(lyric, style, fontSize, fontName)
 
     /**
      * The ledger lines a note at [noteY] needs, as wide as its head at [frame]. They follow the note's pitch, not its
@@ -1222,21 +1346,15 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
     public companion object {
         private const val LYRIC_LINE_HEIGHT_MULTIPLIER = 1.23f
 
-        /** The size of an automatic hyphen, as a share of the lyric's. */
-        private const val AUTOMATIC_HYPHEN_SCALE = 0.72f
-
         /** The advance, in punctum widths, from one note to the next on the same pitch: the spacing of a bivirga or a tristropha. */
         private const val REPEATED_NOTE_ADVANCE = 0.92f
 
-        /** The most that one gap of a staff is closed to fit the staff. */
-        private const val MAXIMUM_GAP_CONDENSATION = 2.5f
+        /** The share of each space between notes that a full staff may give up, as Exsurge's. */
+        private const val CONDENSABLE = 0.3f
 
-        private const val VOWELS = "aeiouyæœáéíóúýAEIOUYÆŒÁÉÍÓÚÝ"
-        // Unicode's spaces, as Swift's `isWhitespace` reads them: the JDK's `\s` is ASCII alone, and Android's
-        // regular expressions don't take the flag that widens it.
-        private val SPACES = Regex("[\t\n\u000B\u000C\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+")
-        private val COMBINING_MARKS = Regex("""\p{M}+""")
-        private val DIPHTHONGS = setOf("ae", "au", "oe")
+        /** A gap between two syllables no wider than this is read as none. */
+        private const val TOUCHING = 0.25f
+
         private val CONNECTED_FORMS = setOf(
             GregorianNeumeForm.Podatus,
             GregorianNeumeForm.PesQuassus,
@@ -1264,15 +1382,60 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             return trimmed.uppercase()
         }
 
-        /** The gaps of a staff that may be closed a little to fit it: those between two things that take room, where no hyphen has been given its lane. A staff is broken, and set, by the same count. */
-        private fun condensibleGaps(units: List<LayoutUnit>): List<Int> = (0 until units.lastIndex).filter {
-            units[it].width > 0 && units[it + 1].width > 0 && !units[it + 1].showsInlineHyphenFromPrevious
-        }
-
         private fun inkRight(composition: Composition): Float {
             val strokes = composition.strokes.maxOfOrNull { max(it.start.x, it.end.x) } ?: -Float.MAX_VALUE
             return max(composition.inkFrame?.right ?: -Float.MAX_VALUE, strokes)
         }
+
+        private fun inkLeft(composition: Composition): Float {
+            val strokes = composition.strokes.minOfOrNull { min(it.start.x, it.end.x) } ?: Float.MAX_VALUE
+            return min(composition.inkFrame?.left ?: Float.MAX_VALUE, strokes)
+        }
+
+        /**
+         * For each unit, whether a staff that ends before it divides a word: whether the next lyric is the next syllable
+         * of the word the last one began. One more than the units, for a staff that ends the score.
+         */
+        private fun wordContinuation(units: List<LayoutUnit>): BooleanArray {
+            val result = BooleanArray(units.size + 1)
+            var continues = false
+            for (index in units.indices.reversed()) {
+                if (units[index].hasLyric) continues = units[index].join == LyricJoin.Syllable
+                result[index] = continues
+            }
+            return result
+        }
+
+        /**
+         * The letters a syllable is sung on: the first vowel of its last word (a note may carry the end of one word and
+         * the beginning of the next, `t Dó`), with the vowels that follow it (`ae`, `au`), past a consonantal i that
+         * begins it (`ius`, `Ie`) or a u after q or g (`qui`, `guis`); the whole syllable, if it has no vowel.
+         */
+        private fun sungVowel(characters: List<String>): IntRange {
+            fun vowel(start: Int): IntRange? {
+                var first = (start until characters.size).firstOrNull { isVowel(characters[it]) } ?: return null
+                if (first + 1 < characters.size && isVowel(characters[first + 1])) {
+                    val letter = baseLetter(characters[first])
+                    val before = if (first > start) baseLetter(characters[first - 1]) else null
+                    if (letter == 'i' && first == start) {
+                        first += 1
+                    } else if (letter == 'u' && (before == 'q' || before == 'g')) {
+                        first += 1
+                    }
+                }
+                var end = first + 1
+                while (end < characters.size && isVowel(characters[end])) end += 1
+                return first until end
+            }
+            val lastWord = characters.indexOfLast { it.isNotEmpty() && it.all(Char::isWhitespace) } + 1
+            return (if (lastWord < characters.size) vowel(lastWord) else null) ?: vowel(0) ?: characters.indices
+        }
+
+        /** A letter without its accents, in lower case: `ǽ` is `æ`, `Ë` is `e`. */
+        private fun baseLetter(character: String): Char? =
+            Normalizer.normalize(character, Normalizer.Form.NFD).lowercase().firstOrNull()
+
+        private fun isVowel(character: String): Boolean = baseLetter(character)?.let { it in "aeiouyæœ" } ?: false
 
         /** A numeral of any script, as Swift's `Character.isNumber` reads one. */
         private fun isNumber(character: Char): Boolean = when (Character.getType(character)) {

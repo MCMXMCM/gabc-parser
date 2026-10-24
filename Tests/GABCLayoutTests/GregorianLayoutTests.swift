@@ -337,7 +337,10 @@ final class GregorianLayoutTests: XCTestCase {
         let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390)
 
         for neume in layout.neumes {
-            XCTAssertGreaterThanOrEqual(neume.hitFrame.width, 23.9)
+            // Short words are set as close as the book sets them, nearer
+            // than a finger's width; their targets still meet, and a tap
+            // between two goes to the nearer.
+            XCTAssertGreaterThanOrEqual(neume.hitFrame.width, 20)
             XCTAssertGreaterThanOrEqual(neume.hitFrame.height, 43.9)
             XCTAssertFalse(neume.inkFrame.isNull)
         }

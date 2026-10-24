@@ -48,7 +48,7 @@ Add the package in Xcode (File ▸ Add Package Dependencies…, with
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.3.1")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.4.0")
 ],
 targets: [
     .target(
@@ -211,7 +211,7 @@ and in the app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.3.1")
+    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.4.0")
 }
 ```
 
@@ -293,11 +293,23 @@ Both languages read the same notation, and fail on the same tokens.
   virgae and strophae (`hvv`, `hsss`).
 - Mora (`.`, `..`), horizontal episema (`_`; below the note with `_0`),
   vertical episema (`'`), and accidentals (`ix`, `iy`, `i#`).
-- Divisions `,` `` ` `` `;` `:` `::`, the line break `z`, and the neume
-  separators `/` and `!`.
-- In lyrics, tags and braces are dropped; psalm-tone pointing marks
-  preparatory (`_cu_`, italic) and accented (`*Ja*`, bold) syllables; `V/.`
-  and `R/.` written alone become ℣. and ℟.
+- Divisions `,` `` ` `` `;` `:` `::`, the line breaks `z` and `Z`, and the
+  neume separators `/` and `!`. `z0`, a custos for the next note, breaks no
+  line: a staff's end has its own custos.
+- In lyrics, tags are dropped, a tilde is a space, and braces name the
+  letters to centre under the note (`{ia}.`); psalm-tone pointing marks
+  preparatory (`_cu_`, italic) and accented (`*Ja*`, bold) syllables. `V/.`
+  and `R/.` become ℣. and ℟.; they, the asterisks, crosses, repeat signs
+  (`ij.`, `iij.`) and verse numbers are rubrics, whether written alone or
+  with a sung syllable (`V/. Dó`, `2. Pro`, `hæc, †`), and a rubric ends the
+  word before it.
+
+Words are set as the chant books set them. Each syllable's vowel stands under
+its first note (past a consonantal i or u: `ius`, `qui`); the syllables of a
+word are either joined, the notes between them closing up by as much as 30%
+of their spacing to let them meet, or parted by one hyphen set just after the
+first, in the lyrics' own type; a word keeps at least a word's space from the
+next; and a word divided at a staff's end carries its hyphen there.
 
 Neumes are grouped and named as Exsurge groups them: podatus, clivis,
 torculus, porrectus, scandicus, climacus, ancus, salicus, pes subpunctis and
