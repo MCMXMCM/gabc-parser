@@ -394,6 +394,16 @@ class GregorianScoreParserTest {
     }
 
     @Test
+    fun testZZeroWritesACustosAndBreaksNoLine() {
+        // A respond's end before the verse's change of clef, as GABC sources write it: the custos, the double bar
+        // and the new clef.
+        val score = GregorianScoreParser.parse("name: z0; %% (c4) cis.(f_c) (z0::c3) V/.() Pro(d)pter(d) (z) quod(d) (::Z)")
+        assertEquals(2, score.elements.count { it == GregorianNotationElement.ForcedBreak })
+        assertEquals(2, score.elements.count { it == GregorianNotationElement.Division(GregorianDivision.Final) })
+        assertEquals("cis. ℣. Propter quod", score.lyricText)
+    }
+
+    @Test
     fun testRepeatedVirgaAndStrophaAreOneEventWrittenSeveralTimes() {
         val timeline = makeTimeline(
             pitches = listOf(7, 7, 7, 7, 7),

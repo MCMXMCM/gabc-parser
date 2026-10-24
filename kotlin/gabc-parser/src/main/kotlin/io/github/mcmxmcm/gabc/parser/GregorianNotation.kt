@@ -120,6 +120,11 @@ public data class GregorianNeume(
     val notes: List<GregorianNote>,
     val form: GregorianNeumeForm = GregorianNeumeClassifier.classify(notes),
     val sourceRange: GregorianSourceRange,
+    /**
+     * The letters of [lyric], as character offsets, that a brace pair in the GABC marks to be centred under the first
+     * note (`{ia}.`); null when none is marked, and the sung vowel is centred.
+     */
+    val centeredRange: IntRange? = null,
 ) {
     val eventIds: List<String> get() = notes.map { it.id }
 
@@ -215,8 +220,9 @@ public object GregorianScoreParser {
 
     private val spaces = Regex("$UNICODE_SPACE+")
 
-    /** The lyric marks set as rubrics when they stand without notes. */
-    private val rubrics = setOf("*", "†", "‡", "+", "℣.", "℟.")
+    /** The signs and repeat marks set as rubrics, beside the verse numbers. */
+    private val rubrics = setOf("*", "**", "†", "‡", "+", "✠", "℣.", "℟.", "V/.", "R/.", "ij.", "iij.", "ij", "iij")
+    private val verseNumber = Regex("^[0-9]+\\.?$")
 
     /**
      * Parses a GABC score, numbering its written notes as events in the order written.
@@ -283,17 +289,38 @@ public object GregorianScoreParser {
             val notationStart = open + 1
             val notation = body.substring(notationStart, close)
             val groupOffset = notationStart
-            val lyric = cleanLyric(lyricSource)
             val parsedLyricStyle = lyricStyle(lyricSource)
             val sourceStartsWord = lyricStartsWord(lyricSource, isFirst = elements.isEmpty())
-            val startsWord = sourceStartsWord || (wordStartIsPending && lyric.isNotEmpty())
 
             val parsed = parseNotationGroup(notation) { offsets[groupOffset + it] }
             val hasNotes = parsed.any { it is ParsedToken.Notes }
-            if (lyric.isNotEmpty() || hasNotes) {
-                wordStartIsPending = false
+            // The rubrics written with a sung syllable stand apart from it: a sign or a verse number before it, a flex
+            // after it.
+            val cleaned = cleanLyric(lyricSource)
+            val sung = if (hasNotes) sungLyric(cleaned) else SungLyric(cleaned)
+            val lyric = sung.text
+            val startsWord = sourceStartsWord || sung.leading.isNotEmpty() || (wordStartIsPending && lyric.isNotEmpty())
+            val leadingStartsWord = sourceStartsWord || wordStartIsPending
+            if (hasNotes) {
+                // A rubric written after the syllable ends its word.
+                wordStartIsPending = sung.trailing.isNotEmpty()
+            } else if (lyric.isNotEmpty()) {
+                // A rubric that stands alone ends the word before it, and begins none: `ne,(f.) R/.(::)In(f)` begins a
+                // word at "In".
+                wordStartIsPending = true
             } else if (sourceStartsWord && parsed.isNotEmpty()) {
                 wordStartIsPending = true
+            }
+            for ((index, mark) in sung.leading.withIndex()) {
+                elements += GregorianNotationElement.LyricMark(
+                    GregorianLyricMark(
+                        text = standaloneLyricText(mark),
+                        style = GregorianLyricStyle.Rubric,
+                        startsWord = if (index == 0) leadingStartsWord else true,
+                        sourceRange = GregorianSourceRange(offsets[cursor] + index, offsets[cursor] + index + 1),
+                        scoreId = scoreId,
+                    ),
+                )
             }
             if (lyric.isNotEmpty() && !hasNotes) {
                 val displayLyric = standaloneLyricText(lyric)
@@ -375,12 +402,25 @@ public object GregorianScoreParser {
                                         segment.first().sourceRange.lowerBound,
                                         segment.last().sourceRange.upperBound,
                                     ),
+                                    centeredRange = if (segmentIndex == 0 && neumeLyric.isNotEmpty()) sung.centeredRange else null,
                                 ),
                             )
                         }
                         appliedLyric = true
                     }
                 }
+            }
+            for ((index, mark) in sung.trailing.withIndex()) {
+                val lowerBound = offsets[open] - sung.trailing.size + index
+                elements += GregorianNotationElement.LyricMark(
+                    GregorianLyricMark(
+                        text = standaloneLyricText(mark),
+                        style = GregorianLyricStyle.Rubric,
+                        startsWord = true,
+                        sourceRange = GregorianSourceRange(lowerBound, lowerBound + 1),
+                        scoreId = scoreId,
+                    ),
+                )
             }
             if (hasNotes) syllableIndex += 1
 
@@ -490,6 +530,12 @@ public object GregorianScoreParser {
 
             if (character == 'z' || character == 'Z') {
                 flushNotes()
+                // `z0` writes a custos for the next note, as before a change of clef, and breaks no line: a staff's
+                // end has its own.
+                if (character == 'z' && index + 1 < characters.length && characters[index + 1] == '0') {
+                    index += 2
+                    continue
+                }
                 result += ParsedToken.ForcedBreak
                 index += 1
                 continue
@@ -630,14 +676,83 @@ public object GregorianScoreParser {
 
     private fun isIgnorableControl(character: Char): Boolean = isNumber(character) || character in "'!@]-+_*†(."
 
-    private fun cleanLyric(source: String): String {
-        var text = source.replace("{", "").replace("}", "")
+    /** A group's lyric, and the letters a brace pair in it marks to be centred, as character offsets into the lyric. */
+    private class CleanLyric(val text: String, val centeredRange: IntRange?)
+
+    /** A sung syllable's lyric, and the rubrics written before and after it. */
+    private class SungLyric(
+        val leading: List<String>,
+        val text: String,
+        val centeredRange: IntRange?,
+        val trailing: List<String>,
+    ) {
+        constructor(lyric: CleanLyric) : this(emptyList(), lyric.text, lyric.centeredRange, emptyList())
+    }
+
+    /** A group's lyric as sung, from its source without tags. */
+    private fun cleanLyric(source: String): CleanLyric {
         // Psalm-tone sources use paired underscores for preparatory syllables and paired asterisks for accented
         // syllables. These delimiters describe pointing and style and are not lyric text. The paired patterns leave
         // a standalone liturgical asterisk unchanged.
-        text = preparatory.replace(text, "$1")
+        var text = preparatory.replace(source, "$1")
         text = accented.replace(text, "$1")
-        return text.replace("\n", " ").split(spaces).filter { it.isNotEmpty() }.joinToString(" ").trim()
+        // A tilde is a space that no line break may take.
+        text = text.replace("~", " ").replace("\n", " ").split(spaces).filter { it.isNotEmpty() }.joinToString(" ").trim()
+        // Braces name the letters to centre under the note, in place of the sung vowel: `{ia}.`, `p{a}u`.
+        val characters = mutableListOf<String>()
+        var braceStart: Int? = null
+        var braceEnd: Int? = null
+        for (character in graphemes(text)) {
+            when (character) {
+                "{" -> if (braceStart == null) braceStart = characters.size
+                "}" -> if (braceStart != null && braceEnd == null) braceEnd = characters.size
+                else -> characters += character
+            }
+        }
+        val start = braceStart
+        val end = braceEnd
+        val centeredRange = if (start != null && end != null && end > start) start until end else null
+        return CleanLyric(characters.joinToString(""), centeredRange)
+    }
+
+    /**
+     * A sung syllable's lyric, without the rubrics written before or after its words: `V/. Dó`, `2. Pro`, `* ab`,
+     * `hæc, †`. A lyric made of rubrics alone is left whole.
+     */
+    private fun sungLyric(lyric: CleanLyric): SungLyric {
+        val words = lyric.text.split(" ").filter { it.isNotEmpty() }
+        var first = 0
+        var last = words.size
+        while (first < last && isRubricMark(words[first])) first += 1
+        while (last > first && isRubricMark(words[last - 1])) last -= 1
+        if (first >= last || (first == 0 && last == words.size)) return SungLyric(lyric)
+        val text = words.subList(first, last).joinToString(" ")
+        val dropped = words.take(first).sumOf { graphemes(it).size + 1 }
+        val textLength = graphemes(text).size
+        val centeredRange = lyric.centeredRange?.let { range ->
+            val lower = range.first - dropped
+            val upper = range.last + 1 - dropped
+            if (lower >= 0 && upper <= textLength) lower until upper else null
+        }
+        return SungLyric(words.take(first), text, centeredRange, words.drop(last))
+    }
+
+    /** Whether a word of a lyric is a rubric: a sign, a repeat mark, or a verse number. */
+    private fun isRubricMark(word: String): Boolean = word in rubrics || verseNumber.matches(word)
+
+    /** A text's characters as a reader counts them, an accent with its letter, as Swift counts them. */
+    private fun graphemes(text: String): List<String> {
+        val breaks = BreakIterator.getCharacterInstance()
+        breaks.setText(text)
+        val clusters = mutableListOf<String>()
+        var start = breaks.first()
+        var end = breaks.next()
+        while (end != BreakIterator.DONE) {
+            clusters += text.substring(start, end)
+            start = end
+            end = breaks.next()
+        }
+        return clusters
     }
 
     private fun lyricStyle(source: String): GregorianLyricStyle {
@@ -654,7 +769,7 @@ public object GregorianScoreParser {
 
     private fun standaloneLyricStyle(lyric: String, parsedStyle: GregorianLyricStyle): GregorianLyricStyle {
         if (parsedStyle != GregorianLyricStyle.Regular) return parsedStyle
-        return if (lyric in rubrics) GregorianLyricStyle.Rubric else GregorianLyricStyle.Regular
+        return if (isRubricMark(lyric)) GregorianLyricStyle.Rubric else GregorianLyricStyle.Regular
     }
 
     private fun lyricStartsWord(source: String, isFirst: Boolean): Boolean {

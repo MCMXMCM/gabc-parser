@@ -192,6 +192,10 @@ public struct GregorianNeume: Codable, Hashable, Sendable, Identifiable {
     public let notes: [GregorianNote]
     public let form: GregorianNeumeForm
     public let sourceRange: GregorianSourceRange
+    /// The letters of `lyric`, as character offsets, that a brace pair in
+    /// the GABC marks to be centred under the first note (`{ia}.`); nil when
+    /// none is marked, and the sung vowel is centred.
+    public let centeredRange: Range<Int>?
 
     public var eventIDs: [String] {
         notes.map(\.id)
@@ -211,7 +215,8 @@ public struct GregorianNeume: Codable, Hashable, Sendable, Identifiable {
         startsWord: Bool,
         notes: [GregorianNote],
         form: GregorianNeumeForm? = nil,
-        sourceRange: GregorianSourceRange
+        sourceRange: GregorianSourceRange,
+        centeredRange: Range<Int>? = nil
     ) {
         self.id = id
         self.syllableID = syllableID
@@ -221,6 +226,7 @@ public struct GregorianNeume: Codable, Hashable, Sendable, Identifiable {
         self.notes = notes
         self.form = form ?? GregorianNeumeClassifier.classify(notes)
         self.sourceRange = sourceRange
+        self.centeredRange = centeredRange
     }
 }
 
@@ -451,20 +457,48 @@ public enum GregorianScoreParser {
             let notationStart = body.index(after: open)
             let notation = String(body[notationStart..<close])
             let groupOffset = openOffset + 1
-            let lyric = cleanLyric(lyricSource)
             let parsedLyricStyle = lyricStyle(lyricSource)
             let sourceStartsWord = lyricStartsWord(lyricSource, isFirst: elements.isEmpty)
-            let startsWord = sourceStartsWord || (wordStartIsPending && !lyric.isEmpty)
 
             let parsed = try parseNotationGroup(notation, baseOffset: groupOffset)
             let hasNotes = parsed.contains { token in
                 if case .notes = token { return true }
                 return false
             }
-            if !lyric.isEmpty || hasNotes {
-                wordStartIsPending = false
+            // The rubrics written with a sung syllable stand apart from it:
+            // a sign or a verse number before it, a flex after it.
+            let cleaned = cleanLyric(lyricSource)
+            let sung = hasNotes ? sungLyric(cleaned) : SungLyric(cleaned)
+            let lyric = sung.text
+            let startsWord = sourceStartsWord
+                || !sung.leading.isEmpty
+                || (wordStartIsPending && !lyric.isEmpty)
+            let leadingStartsWord = sourceStartsWord || wordStartIsPending
+            if hasNotes {
+                // A rubric written after the syllable ends its word.
+                wordStartIsPending = !sung.trailing.isEmpty
+            } else if !lyric.isEmpty {
+                // A rubric that stands alone ends the word before it, and
+                // begins none: `ne,(f.) R/.(::)In(f)` begins a word at "In".
+                wordStartIsPending = true
             } else if sourceStartsWord, !parsed.isEmpty {
                 wordStartIsPending = true
+            }
+            for (index, mark) in sung.leading.enumerated() {
+                elements.append(
+                    .lyricMark(
+                        GregorianLyricMark(
+                            text: standaloneLyricText(mark),
+                            style: .rubric,
+                            startsWord: index == 0 ? leadingStartsWord : true,
+                            sourceRange: GregorianSourceRange(
+                                lowerBound: cursorOffset + index,
+                                upperBound: cursorOffset + index + 1
+                            ),
+                            scoreID: scoreID
+                        )
+                    )
+                )
             }
             if !lyric.isEmpty, !hasNotes {
                 let displayLyric = standaloneLyricText(lyric)
@@ -564,13 +598,33 @@ public enum GregorianScoreParser {
                                     sourceRange: GregorianSourceRange(
                                         lowerBound: segment.first?.sourceRange.lowerBound ?? groupOffset,
                                         upperBound: segment.last?.sourceRange.upperBound ?? groupOffset
-                                    )
+                                    ),
+                                    centeredRange: segmentIndex == 0 && !neumeLyric.isEmpty
+                                        ? sung.centeredRange
+                                        : nil
                                 )
                             )
                         )
                     }
                     appliedLyric = true
                 }
+            }
+            for (index, mark) in sung.trailing.enumerated() {
+                let lowerBound = openOffset - sung.trailing.count + index
+                elements.append(
+                    .lyricMark(
+                        GregorianLyricMark(
+                            text: standaloneLyricText(mark),
+                            style: .rubric,
+                            startsWord: true,
+                            sourceRange: GregorianSourceRange(
+                                lowerBound: lowerBound,
+                                upperBound: lowerBound + 1
+                            ),
+                            scoreID: scoreID
+                        )
+                    )
+                )
             }
             if hasNotes {
                 syllableIndex += 1
@@ -705,6 +759,12 @@ public enum GregorianScoreParser {
 
             if character == "z" || character == "Z" {
                 flushNotes()
+                // `z0` writes a custos for the next note, as before a change
+                // of clef, and breaks no line: a staff's end has its own.
+                if character == "z", index + 1 < characters.count, characters[index + 1] == "0" {
+                    index += 2
+                    continue
+                }
                 result.append(.forcedBreak)
                 index += 1
                 continue
@@ -907,11 +967,35 @@ public enum GregorianScoreParser {
         source.replacingOccurrences(of: tagPattern, with: "", options: .regularExpression)
     }
 
+    /// A group's lyric, and the letters a brace pair in it marks to be
+    /// centred, as character offsets into the lyric.
+    private struct CleanLyric {
+        let text: String
+        let centeredRange: Range<Int>?
+    }
+
+    /// A sung syllable's lyric, and the rubrics written before and after it.
+    private struct SungLyric {
+        let leading: [String]
+        let text: String
+        let centeredRange: Range<Int>?
+        let trailing: [String]
+
+        init(leading: [String] = [], text: String, centeredRange: Range<Int>?, trailing: [String] = []) {
+            self.leading = leading
+            self.text = text
+            self.centeredRange = centeredRange
+            self.trailing = trailing
+        }
+
+        init(_ lyric: CleanLyric) {
+            self.init(text: lyric.text, centeredRange: lyric.centeredRange)
+        }
+    }
+
     /// A group's lyric as sung, from its source without tags.
-    private static func cleanLyric(_ source: String) -> String {
-        source
-            .replacingOccurrences(of: "{", with: "")
-            .replacingOccurrences(of: "}", with: "")
+    private static func cleanLyric(_ source: String) -> CleanLyric {
+        let text = source
             // Psalm-tone sources use paired underscores for preparatory
             // syllables and paired asterisks for accented syllables. These
             // delimiters describe pointing/style and are not lyric text.
@@ -919,10 +1003,67 @@ public enum GregorianScoreParser {
             // liturgical asterisk unchanged.
             .replacingOccurrences(of: preparatoryPattern, with: "$1", options: .regularExpression)
             .replacingOccurrences(of: accentedPattern, with: "$1", options: .regularExpression)
+            // A tilde is a space that no line break may take.
+            .replacingOccurrences(of: "~", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Braces name the letters to centre under the note, in place of the
+        // sung vowel: `{ia}.`, `p{a}u`.
+        var characters: [Character] = []
+        var braceStart: Int?
+        var braceEnd: Int?
+        for character in text {
+            switch character {
+            case "{":
+                if braceStart == nil { braceStart = characters.count }
+            case "}":
+                if braceStart != nil, braceEnd == nil { braceEnd = characters.count }
+            default:
+                characters.append(character)
+            }
+        }
+        let centeredRange = braceStart.flatMap { start in
+            braceEnd.flatMap { end in end > start ? start..<end : nil }
+        }
+        return CleanLyric(text: String(characters), centeredRange: centeredRange)
+    }
+
+    /// A sung syllable's lyric, without the rubrics written before or after
+    /// its words: `V/. Dó`, `2. Pro`, `* ab`, `hæc, †`. A lyric made of
+    /// rubrics alone is left whole.
+    private static func sungLyric(_ lyric: CleanLyric) -> SungLyric {
+        let words = lyric.text.split(separator: " ").map(String.init)
+        var first = 0
+        var last = words.count
+        while first < last, isRubricMark(words[first]) { first += 1 }
+        while last > first, isRubricMark(words[last - 1]) { last -= 1 }
+        guard first < last, first > 0 || last < words.count else { return SungLyric(lyric) }
+        let text = words[first..<last].joined(separator: " ")
+        let dropped = words[..<first].reduce(0) { $0 + $1.count + 1 }
+        let centeredRange = lyric.centeredRange.flatMap { range -> Range<Int>? in
+            let lower = range.lowerBound - dropped
+            let upper = range.upperBound - dropped
+            return lower >= 0 && upper <= text.count ? lower..<upper : nil
+        }
+        return SungLyric(
+            leading: Array(words[..<first]),
+            text: text,
+            centeredRange: centeredRange,
+            trailing: Array(words[last...])
+        )
+    }
+
+    private static let rubricMarks: Set<String> = [
+        "*", "**", "†", "‡", "+", "✠", "℣.", "℟.", "V/.", "R/.", "ij.", "iij.", "ij", "iij"
+    ]
+
+    /// Whether a word of a lyric is a rubric: a sign, a repeat mark, or a
+    /// verse number.
+    private static func isRubricMark(_ word: String) -> Bool {
+        rubricMarks.contains(word)
+            || word.range(of: #"^[0-9]+\.?$"#, options: .regularExpression) != nil
     }
 
     /// A group's lyric style, from its source without tags.
@@ -952,10 +1093,7 @@ public enum GregorianScoreParser {
         parsedStyle: GregorianLyricStyle
     ) -> GregorianLyricStyle {
         guard parsedStyle == .regular else { return parsedStyle }
-        let rubricMarks: Set<String> = [
-            "*", "†", "‡", "+", "℣.", "℟."
-        ]
-        return rubricMarks.contains(lyric) ? .rubric : .regular
+        return isRubricMark(lyric) ? .rubric : .regular
     }
 
     /// Whether a group's lyric, from its source without tags, begins a word.

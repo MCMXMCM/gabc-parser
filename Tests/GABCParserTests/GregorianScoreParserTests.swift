@@ -373,6 +373,18 @@ final class GregorianScoreParserTests: XCTestCase {
         XCTAssertTrue(note.hasMora)
     }
 
+    func testZZeroWritesACustosAndBreaksNoLine() throws {
+        // A respond's end before the verse's change of clef, as GABC
+        // sources write it: the custos, the double bar and the new clef.
+        let score = try GregorianScoreParser.parse(
+            gabc: "name: z0; %% (c4) cis.(f_c) (z0::c3) V/.() Pro(d)pter(d) (z) quod(d) (::Z)"
+        )
+        let breaks = score.elements.filter { $0 == .forcedBreak }.count
+        XCTAssertEqual(breaks, 2)
+        XCTAssertEqual(score.elements.filter { $0 == .division(.final) }.count, 2)
+        XCTAssertEqual(score.lyricText, "cis. ℣. Propter quod")
+    }
+
     func testRepeatedVirgaAndStrophaAreOneEventWrittenSeveralTimes() throws {
         let timeline = makeTimeline(
             pitches: [7, 7, 7, 7, 7],
