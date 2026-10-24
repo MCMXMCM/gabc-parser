@@ -24,7 +24,7 @@ public struct GregorianScoreStyle: Sendable {
     /// lightened in a dark appearance.
     public static let standard = GregorianScoreStyle(
         ink: adaptiveColor(light: (0.11, 0.10, 0.08), dark: (0.85, 0.84, 0.82)),
-        rubric: adaptiveColor(light: (0.54, 0.16, 0.15), dark: (0.68, 0.12, 0.09)),
+        rubric: adaptiveColor(light: (0.54, 0.16, 0.15), dark: (0.87, 0.27, 0.20)),
         highlight: adaptiveColor(light: (0.48, 0.05, 0.04), dark: (0.78, 0.20, 0.16))
     )
 

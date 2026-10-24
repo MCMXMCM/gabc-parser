@@ -26,10 +26,10 @@ public data class GregorianScoreStyle(
             highlight = Color(red = 0.48f, green = 0.05f, blue = 0.04f),
         )
 
-        /** The same, lightened for a dark theme. */
+        /** The same, lightened for a dark theme: the red brighter, as the light one falls to about 3:1 on black. */
         public val Dark: GregorianScoreStyle = GregorianScoreStyle(
             ink = Color(red = 0.85f, green = 0.84f, blue = 0.82f),
-            rubric = Color(red = 0.68f, green = 0.12f, blue = 0.09f),
+            rubric = Color(red = 0.87f, green = 0.27f, blue = 0.20f),
             highlight = Color(red = 0.78f, green = 0.20f, blue = 0.16f),
         )
 
