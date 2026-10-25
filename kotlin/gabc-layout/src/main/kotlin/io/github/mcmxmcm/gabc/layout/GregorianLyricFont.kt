@@ -21,4 +21,13 @@ public object GregorianLyricFont {
  */
 public fun interface GregorianLyricMeasurer {
     public fun width(text: String, style: GregorianLyricStyle, fontSize: Float, fontName: String): Float
+
+    /**
+     * How far the face named rises above its baseline, in ems: where a lyric drawn from the top of its line sets its
+     * baseline. EB Garamond's, unless the measurer knows another face's.
+     */
+    public fun ascent(fontName: String): Float = 1.007f
+
+    /** How tall the face named sets its capitals, in ems. EB Garamond's, unless the measurer knows another face's. */
+    public fun capHeight(fontName: String): Float = 0.65f
 }

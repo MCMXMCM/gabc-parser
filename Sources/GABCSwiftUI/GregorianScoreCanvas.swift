@@ -201,9 +201,11 @@ public struct GregorianScoreCanvas: View {
                 if let annotation = initial.annotation,
                    let annotationOrigin = initial.annotationOrigin {
                     context.draw(
-                        Text(annotation)
-                            .font(.custom(initial.fontName, fixedSize: initial.annotationFontSize))
-                            .foregroundStyle(style.ink),
+                        Self.styled(
+                            Text(annotation).font(.custom(initial.fontName, fixedSize: initial.annotationFontSize)),
+                            initial.style
+                        )
+                        .foregroundStyle(style.ink),
                         at: annotationOrigin,
                         anchor: .topLeading
                     )
@@ -223,9 +225,15 @@ public struct GregorianScoreCanvas: View {
     // The layout measured each lyric at this size in this font: draw it so,
     // without Dynamic Type scaling it again.
     private static func lyricText(_ lyric: GregorianPlacedLyric) -> Text {
-        let text = Text(lyric.text)
-            .font(.custom(lyric.fontName, fixedSize: lyric.fontSize))
-        return switch lyric.style {
+        styled(Text(lyric.text).font(.custom(lyric.fontName, fixedSize: lyric.fontSize)), lyric.style)
+    }
+
+    private static func initialText(_ initial: GregorianPlacedInitial) -> Text {
+        styled(Text(initial.text).font(.custom(initial.fontName, fixedSize: initial.fontSize)), initial.style)
+    }
+
+    private static func styled(_ text: Text, _ style: GregorianLyricStyle) -> Text {
+        switch style {
         case .regular, .rubric:
             text
         case .preparatory:
@@ -233,11 +241,6 @@ public struct GregorianScoreCanvas: View {
         case .accented:
             text.bold()
         }
-    }
-
-    private static func initialText(_ initial: GregorianPlacedInitial) -> Text {
-        Text(initial.text)
-            .font(.custom(initial.fontName, fixedSize: initial.fontSize))
     }
 
     private static func accessibilityLabel(for neume: GregorianNeumePlacement) -> String {

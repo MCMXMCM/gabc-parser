@@ -48,7 +48,7 @@ Add the package in Xcode (File ▸ Add Package Dependencies…, with
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.6.0")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.7.0")
 ],
 targets: [
     .target(
@@ -89,7 +89,11 @@ as its staffs. A tap gives the nearest neume; `highlightedEventID` lights a
 note's whole neume and the lyric of its syllable. Notes are named `note-0`,
 `note-1` and so on in the order written; pass `scoreID:` to prefix the names
 of each score in a document. Pass the mode, `mode: "8g"`, and the first
-syllable's capital becomes a large initial with the mode written above it.
+syllable's capital becomes a large bold initial on the words' baseline, with
+the mode centred above it and the rest of its word small, however the GABC
+writes it (`PU(ei)ER(i.)` is P, uer). A piece with no psalm tone, a hymn, a
+responsory or a part of the Mass, takes one with `opensPiece: true`, its mode
+alone above it (`mode: "8"`).
 
 Colors come from the environment. The default is warm black with red
 rubrics, lightened in a dark appearance:
@@ -101,7 +105,12 @@ GregorianScoreView(gabc: gabc)
 
 `GregorianLayoutMetrics` sizes the staff (`notationScale`, 0.6 to 1.6) and
 the text (`lyricScale`); `GregorianLayoutMetrics.lyricScale(for:)` follows
-Dynamic Type. Lyrics are measured and drawn in EB Garamond, which
+Dynamic Type. Its `displayScale`, the pixels in a point of the screen the
+score is drawn on, makes the staff space a whole number of pixels and every
+staff line, ledger line, stem, episema and bar whole pixels wide, two at
+least, set where its edges fall between pixels, so that they draw crisply;
+the view gives it the screen's scale. Without one, as for print, they are set
+where they fall. Lyrics are measured and drawn in EB Garamond, which
 GABCSwiftUI registers from `GABCLyricFont`. Another font can be named with
 `lyricFontName`; each placed lyric records the font it was measured in, and is
 drawn in it. The face must be registered before a score is laid out.
@@ -211,7 +220,7 @@ and in the app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.6.0")
+    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.7.0")
 }
 ```
 
@@ -236,8 +245,9 @@ fun OpeningVersicle() {
 ```
 
 The view lays the score out across the width it is offered and is as tall as
-its staffs, as the SwiftUI view is; a tap, a highlight, `scoreId` and `mode`
-work as they do there. Colors come from
+its staffs, as the SwiftUI view is; a tap, a highlight, `scoreId`, `mode` and
+`opensPiece` work as they do there, and the staff is snapped to the screen's
+pixels by its density. Colors come from
 `GregorianScoreStyleProvider(GregorianScoreStyle(ink, rubric, highlight))`,
 warm black and red by default and lightened in a dark theme.
 `GregorianLayoutMetrics.lyricScale(fontScale)` follows the system's font size.
@@ -315,7 +325,9 @@ its first note (past a consonantal i or u: `ius`, `qui`); the syllables of a
 word are either joined, the notes between them closing up by as much as 30%
 of their spacing to let them meet, or parted by one hyphen set just after the
 first, in the lyrics' own type; a word keeps at least a word's space from the
-next; and a word divided at a staff's end carries its hyphen there.
+next; and a word divided at a staff's end carries its hyphen there. The words
+stand as far below a staff's lowest ink, its notes and their signs, as they
+stand below a note on the bottom line, and no lower.
 
 Staffs are broken and justified as the chant books break them. A paragraph's
 breaks are chosen together, as TeX and Gregorio choose them, by how far each

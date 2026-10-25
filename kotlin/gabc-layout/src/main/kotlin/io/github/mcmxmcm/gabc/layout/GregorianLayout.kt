@@ -26,11 +26,67 @@ import kotlin.math.pow
 // The engraving of a score: its units measured and broken into staffs, then each note, word and mark set in place,
 // in points of the width it is laid out at. A port of the Swift package's GregorianLayout.swift.
 
+/** The pixel grid of the screen a layout is drawn on, if one is given. */
+private class PixelGrid(
+    /** Pixels in a point; null sets everything where it falls. */
+    val scale: Float?,
+) {
+    /** The nearest length of whole pixels, one at least. */
+    fun wholePixels(length: Float): Float = scale?.let { max(1f, rounded(length * it)) / it } ?: length
+
+    /** A length rounded up to whole pixels. */
+    fun roundedUp(length: Float): Float = scale?.let { ceil(length * it - 0.001f) / it } ?: length
+
+    /** A line's width in whole pixels, two at least. */
+    fun lineWidth(width: Float): Float = scale?.let { max(2f, rounded(width * it)) / it } ?: width
+
+    /**
+     * Where a line of [width], already whole pixels, is centred near [position] so that its edges fall between pixels:
+     * on the edge of a pixel if it is an even number of pixels wide, on the middle of one if odd.
+     */
+    fun centre(position: Float, width: Float, roundingUp: Boolean = false): Float {
+        val scale = scale ?: return position
+        val offset = if (rounded(width * scale) % 2f == 0f) 0f else 0.5f
+        val pixels = position * scale - offset
+        return ((if (roundingUp) ceil(pixels - 0.001f) else rounded(pixels)) + offset) / scale
+    }
+
+    /** Strokes snapped to the grid: each whole pixels wide, and set across or up and down where its edges fall between pixels. */
+    fun snap(strokes: List<GregorianPlacedStroke>): List<GregorianPlacedStroke> {
+        if (scale == null) return strokes
+        return strokes.map { stroke ->
+            val width = lineWidth(stroke.lineWidth)
+            when {
+                abs(stroke.start.y - stroke.end.y) < 0.001f -> {
+                    val y = centre(stroke.start.y, width)
+                    stroke.copy(start = GregorianPoint(stroke.start.x, y), end = GregorianPoint(stroke.end.x, y), lineWidth = width)
+                }
+                abs(stroke.start.x - stroke.end.x) < 0.001f -> {
+                    val x = centre(stroke.start.x, width)
+                    stroke.copy(start = GregorianPoint(x, stroke.start.y), end = GregorianPoint(x, stroke.end.y), lineWidth = width)
+                }
+                else -> stroke.copy(lineWidth = width)
+            }
+        }
+    }
+
+    private companion object {
+        /** Rounded half away from zero, as Swift rounds. */
+        fun rounded(value: Float): Float = if (value >= 0) floor(value + 0.5f) else -floor(-value + 0.5f)
+    }
+}
+
 public data class GregorianLayoutMetrics(
     val notationScale: Double = 1.0,
     val lyricScale: Double = 1.0,
     /** The PostScript name of the font lyrics are measured in. Whatever draws the layout should draw its lyrics in the font each one names. */
     val lyricFontName: String = GregorianLyricFont.DEFAULT_NAME,
+    /**
+     * The pixels in a point of the screen the layout is drawn on. Given, the staff space is a whole number of pixels,
+     * and the staff and ledger lines, stems, episemata and bars are whole pixels wide, two at least, and set where their
+     * edges fall between pixels, so that they draw crisply; null, as for print, sets them where they fall.
+     */
+    val displayScale: Double? = null,
 ) {
     public companion object {
         public const val MINIMUM_NOTATION_SCALE: Double = 0.6
@@ -118,6 +174,8 @@ public data class GregorianPlacedInitial(
     /** The PostScript name of the font the initial and its annotation were measured in. */
     val fontName: String = GregorianLyricFont.DEFAULT_NAME,
     val neumeId: String,
+    /** The style the initial and its annotation were measured in, and must be drawn in: bold, as the chant books set them. */
+    val style: GregorianLyricStyle = GregorianLyricStyle.Regular,
 )
 
 public data class GregorianEventPlacement(val eventId: String, val neumeId: String, val frame: GregorianRect, val lineIndex: Int) {
@@ -162,33 +220,51 @@ public class GregorianLayout(
  * line breaking, then positioned ink. Lyrics are measured by the [measurer], in the font each layout's metrics name.
  */
 public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyricMeasurer) {
+    /**
+     * Lays out a score at a width.
+     *
+     * @param openingLabel The label printed above the initial; the initial is drawn where it is a psalm tone's (`8g`),
+     *   or where the score opens a piece.
+     * @param opensPiece Whether the score opens a piece, a hymn, a responsory or a part of the Mass, which takes an
+     *   initial, with its mode alone above it if it has no psalm tone.
+     */
     public fun layout(
         score: GregorianScore,
         width: Float,
         metrics: GregorianLayoutMetrics = GregorianLayoutMetrics(),
         openingLabel: String? = null,
+        opensPiece: Boolean = false,
     ): GregorianLayout {
         val requestedWidth = width
-        val notationScale = GregorianLayoutMetrics.clampedNotationScale(metrics.notationScale).toFloat()
-        val lyricScale = (metrics.lyricScale.toFloat() * notationScale).coerceIn(0.5f, 3.5f)
+        val requestedNotationScale = GregorianLayoutMetrics.clampedNotationScale(metrics.notationScale).toFloat()
+        val grid = PixelGrid(metrics.displayScale?.toFloat()?.takeIf { it > 0f })
+        // On a screen, a staff space of whole pixels sets every line of the staff alike.
+        val notationScale = grid.wholePixels(12.5f * requestedNotationScale) / 12.5f
+        val lyricScale = (metrics.lyricScale.toFloat() * requestedNotationScale).coerceIn(0.5f, 3.5f)
         val lyricFontName = metrics.lyricFontName
         val columnWidth = max(240f, requestedWidth)
         val glyphScale = notationScale / 16
         val staffStep = 100 * glyphScale // one GABC pitch step, half a staff space
         val staffGap = staffStep * 2
+        val staffLineWidth = grid.lineWidth(max(0.72f, 0.78f * notationScale))
         val sidePadding = 8 * notationScale
         val clefColumn = 18 * notationScale
         val custosColumn = 10 * notationScale
         val lyricFontSize = 21 * lyricScale
         val lyricHeight = ceil(lyricFontSize * LYRIC_LINE_HEIGHT_MULTIPLIER)
-        val openingInitial = openingInitial(score, openingLabel(openingLabel))
+        val openingInitial = openingInitial(score, openingLabel(openingLabel, opensPiece), opensPiece)
         val initialScale = max(notationScale, min(1.35f, lyricScale))
         val initialFontSize = 56 * initialScale
         val initialAnnotationFontSize = 13 * max(notationScale, min(1.25f, lyricScale))
-        val initialWidth = openingInitial?.let { measureLyric(it.text, fontSize = initialFontSize, fontName = lyricFontName) } ?: 0f
-        val initialAnnotationWidth = openingInitial?.annotation?.let {
-            measureLyric(it, fontSize = initialAnnotationFontSize, fontName = lyricFontName)
+        // The initial and its annotation are bold, as the books set them.
+        val initialWidth = openingInitial?.let {
+            measureLyric(it.text, GregorianLyricStyle.Accented, fontSize = initialFontSize, fontName = lyricFontName)
         } ?: 0f
+        val initialAnnotationWidth = openingInitial?.annotation?.let {
+            measureLyric(it, GregorianLyricStyle.Accented, fontSize = initialAnnotationFontSize, fontName = lyricFontName)
+        } ?: 0f
+        val ascent = measurer.ascent(lyricFontName)
+        val capHeight = measurer.capHeight(lyricFontName)
         val initialColumn = if (openingInitial != null) {
             max(38 * notationScale, max(initialWidth, initialAnnotationWidth) + 8 * notationScale)
         } else {
@@ -219,7 +295,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         val lineVerticalMetrics = lines.mapIndexed { lineIndex, lineUnits ->
             verticalMetrics(
                 lineUnits, custosPitch(lineIndex, lines), glyphScale, staffStep, staffGap, notationScale, lyricHeight,
-                if (lineIndex == 0 && openingInitial != null) initialFontSize else null,
+                if (lineIndex == 0 && openingInitial != null) initialFontSize else null, grid, staffLineWidth,
             )
         }
         val lineOrigins = ArrayList<Float>(lines.size)
@@ -263,7 +339,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                     GregorianStrokeKind.Staff,
                     GregorianPoint(staffLeft, y),
                     GregorianPoint(columnWidth - sidePadding, y),
-                    lineWidth = max(0.72f, 0.78f * notationScale),
+                    lineWidth = staffLineWidth,
                 )
             }
 
@@ -276,18 +352,26 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             appendClef(activeClef, staffLeft + 2 * notationScale, staffTop, staffGap, glyphScale, notationScale, glyphs)
 
             if (lineIndex == 0 && openingInitial != null) {
+                // The initial stands on the words' baseline, and its annotation is centred over it, its capitals about
+                // the top line, as in the Liber.
+                val lyricBaseline = lyricY + ascent * lyricFontSize
+                val annotationBaseline = staffTop - 0.14f * staffGap + capHeight * initialAnnotationFontSize / 2
                 initials += GregorianPlacedInitial(
                     text = openingInitial.text,
                     annotation = openingInitial.annotation,
                     annotationOrigin = openingInitial.annotation?.let {
-                        GregorianPoint(sidePadding + (initialColumn - initialWidth) / 2, max(0f, staffTop - initialAnnotationFontSize))
+                        GregorianPoint(
+                            sidePadding + (initialColumn - initialAnnotationWidth) / 2,
+                            max(0f, annotationBaseline - ascent * initialAnnotationFontSize),
+                        )
                     },
                     annotationFontSize = initialAnnotationFontSize,
-                    origin = GregorianPoint(sidePadding + (initialColumn - initialWidth) / 2, staffTop),
+                    origin = GregorianPoint(sidePadding + (initialColumn - initialWidth) / 2, lyricBaseline - ascent * initialFontSize),
                     width = initialWidth,
                     fontSize = initialFontSize,
                     fontName = lyricFontName,
                     neumeId = openingInitial.neumeId,
+                    style = GregorianLyricStyle.Accented,
                 )
             }
 
@@ -378,7 +462,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             }
         }
 
-        strokes = mergeLedgerLines(strokes, notationScale).toMutableList()
+        strokes = grid.snap(mergeLedgerLines(strokes, notationScale)).toMutableList()
         val neumes = makeHitFrames(rawNeumes, columnWidth, notationScale)
         return GregorianLayout(
             size = GregorianSize(columnWidth, max(64f, contentHeight)),
@@ -420,6 +504,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         val forcesBreak: Boolean,
         /** The notes beside a neume that its engraving needs. */
         val context: NeumeContext = NeumeContext(),
+        /** How far the unit's ink reaches below the staff's bottom line. */
+        val inkBelowStaff: Float = 0f,
     ) {
         val neume: GregorianNeume? get() = (element as? GregorianNotationElement.Neume)?.neume
 
@@ -523,8 +609,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
 
     private class OpeningInitial(val text: String, val annotation: String?, val remainder: String, val neumeId: String)
 
-    private fun openingInitial(score: GregorianScore, annotation: String?): OpeningInitial? {
-        if (annotation == null) return null
+    private fun openingInitial(score: GregorianScore, annotation: String?, opensPiece: Boolean): OpeningInitial? {
+        if (annotation == null && !opensPiece) return null
         val neume = score.neumes.firstOrNull { it.lyric.isNotEmpty() } ?: return null
         val characters = graphemes(neume.lyric)
         val initialIndex = characters.indexOfFirst { cluster -> cluster.any(Char::isUpperCase) }
@@ -533,10 +619,11 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             cluster.all { it.isWhitespace() || isNumber(it) || it == '.' }
         }
         if (!prefixIsSilent) return null
+        // The rest of the word the initial begins is small, however the GABC writes it (PU-ER).
         return OpeningInitial(
             text = characters[initialIndex],
             annotation = annotation,
-            remainder = characters.drop(initialIndex + 1).joinToString(""),
+            remainder = characters.drop(initialIndex + 1).joinToString("").lowercase(),
             neumeId = neume.id,
         )
     }
@@ -561,12 +648,13 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         notationScale: Float,
         lyricHeight: Float,
         openingInitialFontSize: Float?,
+        grid: PixelGrid,
+        staffLineWidth: Float,
     ): LineVerticalMetrics {
         val notes = units.mapNotNull { it.neume }.flatMap { it.notes }
         val accidentalPitches = units.mapNotNull { (it.element as? GregorianNotationElement.Accidental)?.mark?.pitch }
         val pitches = notes.map { it.pitch } + accidentalPitches + listOfNotNull(custosPitch)
         val highestPitch = pitches.maxOrNull() ?: 9
-        val lowestPitch = pitches.minOrNull() ?: 3
         var topInset = max(11 * notationScale, max(0, highestPitch - 9) * staffStep + 10 * notationScale)
         // A custos's stem rises farther above its pitch than a note's head: the staff is set low enough to hold it.
         val highestCustos = (notes.filter { it.isCustos }.map { it.pitch } + listOfNotNull(custosPitch)).maxOrNull()
@@ -574,12 +662,24 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             val stem = GregorianGlyphCatalog.definition(GregorianGlyphName.CustosShort).origin.y * glyphScale
             topInset = max(topInset, (highestCustos - 9) * staffStep + stem + 2 * notationScale)
         }
-        val belowStaff = if (lowestPitch < 3) (3 - lowestPitch) * staffStep + 10 * notationScale else 0f
-        val lyricOffset = if (belowStaff > 0) belowStaff + 6 * notationScale else 2 * notationScale
+        // The words stand as far below the lowest ink as they stand below a note on the bottom line, and no nearer the
+        // staff.
+        var inkBelow = units.maxOfOrNull { it.inkBelowStaff } ?: 0f
+        if (custosPitch != null) {
+            val custos = GregorianGlyphCatalog.definition(GregorianGlyphName.CustosShort)
+            val y = staffGap * 1.5f - (custosPitch - 6) * staffStep
+            inkBelow = max(inkBelow, y + (custos.bounds.height - custos.origin.y) * glyphScale - staffGap * 3)
+        }
+        val punctum = GregorianGlyphCatalog.definition(GregorianGlyphName.PunctumQuadratum)
+        val headBelowLine = (punctum.bounds.height - punctum.origin.y) * glyphScale
+        val lyricOffset = max(2 * notationScale, inkBelow - headBelowLine + 2 * notationScale)
+        // On a screen, each staff begins on a whole pixel, and its top line is set where its edges fall between pixels;
+        // the others follow it a whole number of pixels apart.
+        topInset = grid.centre(topInset, staffLineWidth, roundingUp = true)
         val systemGap = 4 * notationScale
         val notationHeight = topInset + staffGap * 3 + lyricOffset + lyricHeight + systemGap
         val initialHeight = openingInitialFontSize?.let { topInset + ceil(it * 1.15f) + systemGap } ?: 0f
-        return LineVerticalMetrics(topInset, lyricOffset, max(notationHeight, initialHeight))
+        return LineVerticalMetrics(topInset, lyricOffset, grid.roundedUp(max(notationHeight, initialHeight)))
     }
 
     private fun makeUnits(
@@ -606,7 +706,44 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             join: LyricJoin = LyricJoin.Word,
             forcesBreak: Boolean = false,
             context: NeumeContext = NeumeContext(),
-        ) = LayoutUnit(element, inkLeft, inkRight, lyricText, lyricWidth, lyricFocus, join, forcesBreak, context)
+            inkBottom: Float = 0f,
+        ) = LayoutUnit(
+            element, inkLeft, inkRight, lyricText, lyricWidth, lyricFocus, join, forcesBreak, context,
+            // Reckoned on a staff whose top line is at 0.
+            inkBelowStaff = max(0f, inkBottom - 3 * staffSpace),
+        )
+
+        // A first syllable that the initial takes whole leaves a hyphen under its notes where its word goes on, as
+        // Gregorio and Exsurge set it.
+        val openingHyphen = run {
+            if (openingInitial == null || openingInitial.remainder.isNotEmpty()) return@run false
+            val neumes = score.neumes
+            val first = neumes.indexOfFirst { it.id == openingInitial.neumeId }
+            if (first < 0) return@run false
+            val next = neumes.drop(first + 1).firstOrNull { it.lyric.isNotEmpty() } ?: return@run false
+            !next.startsWord && next.syllableId != neumes[first].syllableId
+        }
+        // And so are its other syllables.
+        val openingWord = mutableSetOf<String>()
+        // A verse number written before the initial's syllable is left out: the initial marks the first verse. The
+        // others keep theirs.
+        val omittedMarks = mutableSetOf<Int>()
+        if (openingInitial != null) {
+            val first = score.elements.indexOfFirst { (it as? GregorianNotationElement.Neume)?.neume?.id == openingInitial.neumeId }
+            if (first >= 0) {
+                for (element in score.elements.drop(first + 1)) {
+                    if (element is GregorianNotationElement.LyricMark) break
+                    val neume = (element as? GregorianNotationElement.Neume)?.neume ?: continue
+                    if (neume.lyric.isEmpty()) continue
+                    if (neume.startsWord) break
+                    openingWord += neume.id
+                }
+                for (index in 0 until first) {
+                    val mark = (score.elements[index] as? GregorianNotationElement.LyricMark)?.mark ?: continue
+                    if (VERSE_NUMBER.matches(mark.text)) omittedMarks += index
+                }
+            }
+        }
 
         // Each neume's context: the last note of the neume of its syllable that it follows with no space (`!`), and
         // the next neume's first note.
@@ -626,19 +763,25 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             if (first != null && !first.isCustos) nextNote = first
         }
 
-        return elements.mapIndexed { elementIndex, element ->
+        return elements.mapIndexedNotNull { elementIndex, element ->
             when (element) {
                 is GregorianNotationElement.Clef -> unit(element, inkRight = 24 * notationScale)
                 is GregorianNotationElement.Accidental -> {
                     val definition = GregorianGlyphCatalog.definition(accidentalKind(element.mark.kind).catalogName)
+                    val y = staffSpace * 1.5f - (element.mark.pitch - 6) * punctum
                     // The accidental, and the space that parts it from its note: about a quarter of a staff space, as
                     // Gregorio's.
-                    unit(element, inkRight = definition.bounds.width * glyphScale * 0.9f + 0.27f * staffSpace)
+                    unit(
+                        element,
+                        inkRight = definition.bounds.width * glyphScale * 0.9f + 0.27f * staffSpace,
+                        inkBottom = y + (definition.bounds.height - definition.origin.y) * glyphScale * 0.9f,
+                    )
                 }
                 is GregorianNotationElement.Division ->
                     unit(element, inkRight = (if (element.division == GregorianDivision.Final) 17 else 12) * notationScale)
                 GregorianNotationElement.ForcedBreak -> unit(element, inkRight = 0f, forcesBreak = true)
                 is GregorianNotationElement.LyricMark -> {
+                    if (elementIndex in omittedMarks) return@mapIndexedNotNull null
                     previousLyricText = element.mark.text
                     previousLyricSyllableId = null
                     unit(
@@ -651,7 +794,11 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                 is GregorianNotationElement.Neume -> {
                     val neume = element.neume
                     val opensScore = openingInitial != null && openingInitial.neumeId == neume.id
-                    val lyricText = if (opensScore) openingInitial.remainder else neume.lyric
+                    val lyricText = when {
+                        !opensScore -> if (neume.id in openingWord) neume.lyric.lowercase() else neume.lyric
+                        openingHyphen -> "-"
+                        else -> openingInitial.remainder
+                    }
                     // The opening initial takes the syllable's first letter.
                     val centeredRange = if (opensScore) {
                         neume.centeredRange?.let { if (it.first >= 1) (it.first - 1)..(it.last - 1) else null }
@@ -676,21 +823,28 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                     unit(
                         element,
                         // A neume is placed by its first note's centre, under which its syllable's vowel stands.
-                        inkLeft = ink.first - punctum / 2,
-                        inkRight = ink.second - punctum / 2,
+                        inkLeft = ink.left - punctum / 2,
+                        inkRight = ink.right - punctum / 2,
                         lyricText = lyricText,
                         lyricWidth = lyric.width,
                         lyricFocus = lyric.focus,
                         join = join,
                         context = context,
+                        inkBottom = ink.bottom,
                     )
                 }
             }
         }
     }
 
-    /** A neume's ink, from where its notation begins: its notes, with their dots, episemata and ledger lines. */
-    private fun notationInk(neume: GregorianNeume, context: NeumeContext, glyphScale: Float, notationScale: Float): Pair<Float, Float> {
+    /** A neume's ink, from where its notation begins and to where it ends, and its lowest. */
+    private class NotationInk(val left: Float, val right: Float, val bottom: Float)
+
+    /**
+     * A neume's ink, from where its notation begins: its notes, with their dots, episemata and ledger lines; and its
+     * lowest, on a staff whose top line is at 0.
+     */
+    private fun notationInk(neume: GregorianNeume, context: NeumeContext, glyphScale: Float, notationScale: Float): NotationInk {
         val staffStep = 100 * glyphScale
         val staffGap = staffStep * 2
         val composition = compose(
@@ -699,8 +853,12 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         )
         val left = inkLeft(composition)
         val right = inkRight(composition)
-        if (left == Float.MAX_VALUE || right == -Float.MAX_VALUE || right <= left) return 0f to staffStep
-        return left to right
+        val bottom = max(
+            composition.inkFrame?.bottom ?: 0f,
+            composition.strokes.maxOfOrNull { max(it.start.y, it.end.y) + it.lineWidth / 2 } ?: 0f,
+        )
+        if (left == Float.MAX_VALUE || right == -Float.MAX_VALUE || right <= left) return NotationInk(0f, staffStep, bottom)
+        return NotationInk(left, right, bottom)
     }
 
     /**
@@ -2055,8 +2213,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
     ): Float = if (lyric.isEmpty()) 0f else measurer.width(lyric, style, fontSize, fontName)
 
     /**
-     * The ledger lines a note at [noteY] needs, as wide as its head at [frame]. They follow the note's pitch, not its
-     * glyph, whose stem or swash may reach far from the head.
+     * The ledger lines a note at [noteY] needs, as wide as its head at [frame] and a staff line's weight, as the books
+     * draw them. They follow the note's pitch, not its glyph, whose stem or swash may reach far from the head.
      */
     private fun appendLedgerLines(
         frame: GregorianRect,
@@ -2072,7 +2230,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             var y = staffTop - staffGap
             while (y >= noteY - 1) {
                 strokes += GregorianPlacedStroke(
-                    GregorianStrokeKind.Ledger, GregorianPoint(frame.left - 3 * scale, y), GregorianPoint(frame.right + 3 * scale, y), scale, eventId,
+                    GregorianStrokeKind.Ledger, GregorianPoint(frame.left - 3 * scale, y), GregorianPoint(frame.right + 3 * scale, y),
+                    max(0.72f, 0.78f * scale), eventId,
                 )
                 y -= staffGap
             }
@@ -2080,7 +2239,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             var y = staffBottom + staffGap
             while (y <= noteY + 1) {
                 strokes += GregorianPlacedStroke(
-                    GregorianStrokeKind.Ledger, GregorianPoint(frame.left - 3 * scale, y), GregorianPoint(frame.right + 3 * scale, y), scale, eventId,
+                    GregorianStrokeKind.Ledger, GregorianPoint(frame.left - 3 * scale, y), GregorianPoint(frame.right + 3 * scale, y),
+                    max(0.72f, 0.78f * scale), eventId,
                 )
                 y += staffGap
             }
@@ -2169,8 +2329,7 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             val trimmed = mode?.trim() ?: return null
             if (trimmed.isEmpty()) return null
             val compact = trimmed.lowercase().filterNot { it.isWhitespace() }
-            val prefixes = listOf("viii", "vii", "iii", "vi", "iv", "ii", "v", "i", "8", "7", "6", "5", "4", "3", "2", "1")
-            val prefix = prefixes.firstOrNull { compact.startsWith(it) } ?: return null
+            val prefix = MODE_PREFIXES.firstOrNull { compact.startsWith(it) } ?: return null
             var conclusion = compact.drop(prefix.length)
             if (conclusion.startsWith("-")) conclusion = conclusion.drop(1)
             if (conclusion.startsWith("alt-")) conclusion = conclusion.drop(4)
@@ -2180,6 +2339,28 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             if (!(variant.isEmpty() || variant.all(::isNumber) || variant == "star" || variant == "-")) return null
             return trimmed.uppercase()
         }
+
+        /**
+         * The label printed above the initial of a piece that opens a chant: for an antiphon, its mode and the
+         * conclusion of its psalm tone, as [openingLabel] gives it; for a piece with no psalm tone, a hymn, a
+         * responsory or a part of the Mass, its mode alone ("8", "4").
+         */
+        public fun openingLabel(mode: String?, opensPiece: Boolean): String? {
+            openingLabel(mode)?.let { return it }
+            if (!opensPiece) return null
+            val compact = mode?.lowercase()?.filterNot { it.isWhitespace() } ?: return null
+            val prefix = MODE_PREFIXES.firstOrNull { compact.startsWith(it) } ?: return null
+            // A numeral, not the first letters of a word.
+            if (compact.drop(prefix.length).firstOrNull()?.isLetter() == true) return null
+            val index = MODE_PREFIXES.indexOf(prefix)
+            return MODE_PREFIXES[if (index < 8) index + 8 else index]
+        }
+
+        /** A verse number: `1.`, `12`. */
+        private val VERSE_NUMBER = Regex("^[0-9]+\\.?$")
+
+        /** The modes as the GABC writes them, the longer Roman numerals first and each in the same place as its Arabic numeral eight on. */
+        private val MODE_PREFIXES = listOf("viii", "vii", "iii", "vi", "iv", "ii", "v", "i", "8", "7", "3", "6", "4", "2", "5", "1")
 
         private fun inkRight(composition: Composition): Float {
             val strokes = composition.strokes.maxOfOrNull { max(it.start.x, it.end.x) } ?: -Float.MAX_VALUE

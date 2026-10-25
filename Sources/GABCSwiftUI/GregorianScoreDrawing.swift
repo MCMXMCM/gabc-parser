@@ -11,14 +11,18 @@ public struct GregorianPreparedScore: Sendable {
 
     /// Lays a score out at a width and prepares its drawing.
     ///
-    /// - Parameter mode: The score's mode, shown above a large initial when
-    ///   it names a conclusion (`8g`, `7c2`); see
-    ///   ``GregorianEngravingLayoutEngine/openingLabel(forMode:)``.
+    /// - Parameters:
+    ///   - mode: The score's mode, shown above a large initial when it names
+    ///     a conclusion (`8g`, `7c2`), or when the score opens a piece; see
+    ///     ``GregorianEngravingLayoutEngine/openingLabel(forMode:opensPiece:)``.
+    ///   - opensPiece: Whether the score opens a piece, a hymn, a responsory
+    ///     or a part of the Mass, which takes an initial.
     public init(
         score: GregorianScore,
         width: CGFloat,
         metrics: GregorianLayoutMetrics = GregorianLayoutMetrics(),
-        mode: String? = nil
+        mode: String? = nil,
+        opensPiece: Bool = false
     ) {
         // The lyrics are measured and drawn in EB Garamond.
         GregorianLyricFont.registerBundledFont()
@@ -28,7 +32,8 @@ public struct GregorianPreparedScore: Sendable {
                 score: score,
                 width: width,
                 metrics: metrics,
-                openingLabel: mode
+                openingLabel: mode,
+                opensPiece: opensPiece
             )
         )
     }

@@ -27,8 +27,10 @@ public class GregorianPreparedScore(public val score: GregorianScore, public val
         /**
          * Lays a score out at a width and prepares its drawing, measuring its lyrics with [measurer].
          *
-         * @param mode The score's mode, shown above a large initial when it names a conclusion (`8g`, `7c2`); see
-         *   [GregorianEngravingLayoutEngine.openingLabel].
+         * @param mode The score's mode, shown above a large initial when it names a conclusion (`8g`, `7c2`), or when
+         *   the score opens a piece; see [GregorianEngravingLayoutEngine.openingLabel].
+         * @param opensPiece Whether the score opens a piece, a hymn, a responsory or a part of the Mass, which takes an
+         *   initial.
          */
         public fun prepare(
             score: GregorianScore,
@@ -36,9 +38,10 @@ public class GregorianPreparedScore(public val score: GregorianScore, public val
             measurer: GregorianLyricMeasurer,
             metrics: GregorianLayoutMetrics = GregorianLayoutMetrics(),
             mode: String? = null,
+            opensPiece: Boolean = false,
         ): GregorianPreparedScore = GregorianPreparedScore(
             score,
-            GregorianEngravingLayoutEngine(measurer).layout(score, width, metrics, openingLabel = mode),
+            GregorianEngravingLayoutEngine(measurer).layout(score, width, metrics, openingLabel = mode, opensPiece = opensPiece),
         )
 
         /** Lays a score out at a width and prepares its drawing, measuring its lyrics in the bundled EB Garamond. */
@@ -48,7 +51,8 @@ public class GregorianPreparedScore(public val score: GregorianScore, public val
             width: Float,
             metrics: GregorianLayoutMetrics = GregorianLayoutMetrics(),
             mode: String? = null,
-        ): GregorianPreparedScore = prepare(score, width, GregorianLyricFont.measurer(context), metrics, mode)
+            opensPiece: Boolean = false,
+        ): GregorianPreparedScore = prepare(score, width, GregorianLyricFont.measurer(context), metrics, mode, opensPiece)
     }
 }
 

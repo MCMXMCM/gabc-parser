@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -25,7 +26,11 @@ import io.github.mcmxmcm.gabc.parser.GregorianScoreParser
  *
  * @param gabc A GABC file, or its notation alone.
  * @param scoreId A prefix for the names the parser gives the notes; see [GregorianScoreParser.parse].
- * @param mode The score's mode, shown above a large initial when it names a conclusion (`8g`, `7c2`).
+ * @param metrics The score's sizes. Without a display scale, the view snaps the staff to the pixels of the screen it is
+ *   drawn on.
+ * @param mode The score's mode, shown above a large initial when it names a conclusion (`8g`, `7c2`), or when the
+ *   score opens a piece.
+ * @param opensPiece Whether the score opens a piece, a hymn, a responsory or a part of the Mass, which takes an initial.
  * @param highlightedEventId A note to light, with the rest of its neume and the lyric of its syllable.
  * @param onTapNeume Called with the neume nearest a tap.
  */
@@ -36,10 +41,11 @@ public fun GregorianScoreView(
     scoreId: String? = null,
     metrics: GregorianLayoutMetrics = GregorianLayoutMetrics(),
     mode: String? = null,
+    opensPiece: Boolean = false,
     highlightedEventId: String? = null,
     onTapNeume: ((GregorianNeumePlacement) -> Unit)? = null,
 ) {
-    ScoreView(modifier, Source.Gabc(gabc, scoreId), metrics, mode, highlightedEventId, onTapNeume)
+    ScoreView(modifier, Source.Gabc(gabc, scoreId), metrics, mode, opensPiece, highlightedEventId, onTapNeume)
 }
 
 /** Engraves and draws a parsed score across the width it is offered; see the GABC overload. */
@@ -49,10 +55,11 @@ public fun GregorianScoreView(
     modifier: Modifier = Modifier,
     metrics: GregorianLayoutMetrics = GregorianLayoutMetrics(),
     mode: String? = null,
+    opensPiece: Boolean = false,
     highlightedEventId: String? = null,
     onTapNeume: ((GregorianNeumePlacement) -> Unit)? = null,
 ) {
-    ScoreView(modifier, Source.Score(score), metrics, mode, highlightedEventId, onTapNeume)
+    ScoreView(modifier, Source.Score(score), metrics, mode, opensPiece, highlightedEventId, onTapNeume)
 }
 
 private sealed interface Source {
@@ -66,10 +73,14 @@ private fun ScoreView(
     source: Source,
     metrics: GregorianLayoutMetrics,
     mode: String?,
+    opensPiece: Boolean,
     highlightedEventId: String?,
     onTapNeume: ((GregorianNeumePlacement) -> Unit)?,
 ) {
     val context = LocalContext.current
+    // A layout point is drawn to a density-independent pixel: the staff is snapped to the screen's pixels in them.
+    val density = LocalDensity.current.density
+    val screenMetrics = if (metrics.displayScale == null) metrics.copy(displayScale = density.toDouble()) else metrics
     BoxWithConstraints(modifier.fillMaxWidth()) {
         if (!constraints.hasBoundedWidth) return@BoxWithConstraints
         val width = maxWidth.value
@@ -82,8 +93,8 @@ private fun ScoreView(
                 }
             }
         }
-        val prepared = remember(parsed, metrics, mode, width) {
-            parsed.mapCatching { GregorianPreparedScore.prepare(context, it, width, metrics, mode) }
+        val prepared = remember(parsed, screenMetrics, mode, opensPiece, width) {
+            parsed.mapCatching { GregorianPreparedScore.prepare(context, it, width, screenMetrics, mode, opensPiece) }
         }
         prepared.fold(
             onSuccess = { GregorianScoreCanvas(it, highlightedEventId = highlightedEventId, onTapNeume = onTapNeume) },

@@ -18,15 +18,83 @@ public struct GregorianLayoutMetrics: Hashable, Sendable {
     /// The PostScript name of the font lyrics are measured in. Whatever
     /// draws the layout should draw its lyrics in the font each one names.
     public var lyricFontName: String
+    /// The pixels in a point of the screen the layout is drawn on. Given,
+    /// the staff space is a whole number of pixels, and the staff and ledger
+    /// lines, stems, episemata and bars are whole pixels wide, two at
+    /// least, and set where their edges fall between pixels, so that they
+    /// draw crisply; nil, as for print, sets them where they fall.
+    public var displayScale: Double?
 
     public init(
         notationScale: Double = 1,
         lyricScale: Double = 1,
-        lyricFontName: String = GregorianLyricFont.defaultName
+        lyricFontName: String = GregorianLyricFont.defaultName,
+        displayScale: Double? = nil
     ) {
         self.notationScale = notationScale
         self.lyricScale = lyricScale
         self.lyricFontName = lyricFontName
+        self.displayScale = displayScale
+    }
+}
+
+/// The pixel grid of the screen a layout is drawn on, if one is given.
+private struct PixelGrid {
+    /// Pixels in a point; nil sets everything where it falls.
+    let scale: CGFloat?
+
+    /// The nearest length of whole pixels, one at least.
+    func wholePixels(_ length: CGFloat) -> CGFloat {
+        guard let scale else { return length }
+        return max(1, (length * scale).rounded()) / scale
+    }
+
+    /// A length rounded up to whole pixels.
+    func roundedUp(_ length: CGFloat) -> CGFloat {
+        guard let scale else { return length }
+        return (length * scale - 0.001).rounded(.up) / scale
+    }
+
+    /// A line's width in whole pixels, two at least.
+    func lineWidth(_ width: CGFloat) -> CGFloat {
+        guard let scale else { return width }
+        return max(2, (width * scale).rounded()) / scale
+    }
+
+    /// Where a line of `width`, already whole pixels, is centred near
+    /// `position` so that its edges fall between pixels: on the edge of a
+    /// pixel if it is an even number of pixels wide, on the middle of one
+    /// if odd.
+    func centre(_ position: CGFloat, width: CGFloat, roundingUp: Bool = false) -> CGFloat {
+        guard let scale else { return position }
+        let offset: CGFloat = (width * scale).rounded().truncatingRemainder(dividingBy: 2) == 0 ? 0 : 0.5
+        let pixels = position * scale - offset
+        return ((roundingUp ? (pixels - 0.001).rounded(.up) : pixels.rounded()) + offset) / scale
+    }
+
+    /// Strokes snapped to the grid: each whole pixels wide, and set across
+    /// or up and down where its edges fall between pixels.
+    func snap(_ strokes: [GregorianPlacedStroke]) -> [GregorianPlacedStroke] {
+        guard scale != nil else { return strokes }
+        return strokes.map { stroke in
+            let width = lineWidth(stroke.lineWidth)
+            var start = stroke.start
+            var end = stroke.end
+            if abs(start.y - end.y) < 0.001 {
+                start.y = centre(start.y, width: width)
+                end.y = start.y
+            } else if abs(start.x - end.x) < 0.001 {
+                start.x = centre(start.x, width: width)
+                end.x = start.x
+            }
+            return GregorianPlacedStroke(
+                kind: stroke.kind,
+                start: start,
+                end: end,
+                lineWidth: width,
+                eventID: stroke.eventID
+            )
+        }
     }
 }
 
@@ -149,6 +217,9 @@ public struct GregorianPlacedInitial: Hashable, Sendable {
     /// The PostScript name of the font the initial and its annotation were
     /// measured in.
     public let fontName: String
+    /// The style the initial and its annotation were measured in, and must
+    /// be drawn in: bold, as the chant books set them.
+    public let style: GregorianLyricStyle
     public let neumeID: String
 
     public init(
@@ -160,6 +231,7 @@ public struct GregorianPlacedInitial: Hashable, Sendable {
         width: CGFloat,
         fontSize: CGFloat,
         fontName: String = GregorianLyricFont.defaultName,
+        style: GregorianLyricStyle = .regular,
         neumeID: String
     ) {
         self.text = text
@@ -170,6 +242,7 @@ public struct GregorianPlacedInitial: Hashable, Sendable {
         self.width = width
         self.fontSize = fontSize
         self.fontName = fontName
+        self.style = style
         self.neumeID = neumeID
     }
 }
@@ -290,10 +363,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let compact = mode
             .lowercased()
             .filter { !$0.isWhitespace }
-        let modePrefixes = [
-            "viii", "vii", "iii", "vi", "iv", "ii", "v", "i",
-            "8", "7", "6", "5", "4", "3", "2", "1"
-        ]
         guard let prefix = modePrefixes.first(where: { compact.hasPrefix($0) }) else {
             return nil
         }
@@ -320,22 +389,60 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         return mode.uppercased()
     }
 
+    /// The label printed above the initial of a piece that opens a chant:
+    /// for an antiphon, its mode and the conclusion of its psalm tone, as
+    /// ``openingLabel(forMode:)`` gives it; for a piece with no psalm tone, a
+    /// hymn, a responsory or a part of the Mass, its mode alone ("8", "4").
+    public static func openingLabel(forMode mode: String?, opensPiece: Bool) -> String? {
+        if let label = openingLabel(forMode: mode) { return label }
+        guard opensPiece,
+              let compact = mode?.lowercased().filter({ !$0.isWhitespace }),
+              let prefix = modePrefixes.first(where: { compact.hasPrefix($0) }) else {
+            return nil
+        }
+        // A numeral, not the first letters of a word.
+        if let next = compact.dropFirst(prefix.count).first, next.isLetter { return nil }
+        let index = modePrefixes.firstIndex(of: prefix)!
+        return modePrefixes[index < 8 ? index + 8 : index]
+    }
+
+    /// The modes as the GABC writes them, the longer Roman numerals first
+    /// and each in the same place as its Arabic numeral eight on.
+    private static let modePrefixes = [
+        "viii", "vii", "iii", "vi", "iv", "ii", "v", "i",
+        "8", "7", "3", "6", "4", "2", "5", "1"
+    ]
+
+    /// Lays out a score at a width.
+    ///
+    /// - Parameters:
+    ///   - openingLabel: The label printed above the initial; the initial is
+    ///     drawn where it is a psalm tone's (`8g`), or where the score opens
+    ///     a piece.
+    ///   - opensPiece: Whether the score opens a piece, a hymn, a responsory
+    ///     or a part of the Mass, which takes an initial, with its mode alone
+    ///     above it if it has no psalm tone.
     public func layout(
         score: GregorianScore,
         width requestedWidth: CGFloat,
         metrics: GregorianLayoutMetrics = GregorianLayoutMetrics(),
-        openingLabel: String? = nil
+        openingLabel: String? = nil,
+        opensPiece: Bool = false
     ) -> GregorianLayout {
-        let notationScale = CGFloat(
+        let requestedNotationScale = CGFloat(
             GregorianLayoutMetrics.clampedNotationScale(
                 metrics.notationScale
             )
         )
+        let grid = PixelGrid(scale: metrics.displayScale.flatMap { $0 > 0 ? CGFloat($0) : nil })
+        // On a screen, a staff space of whole pixels sets every line of the
+        // staff alike.
+        let notationScale = grid.wholePixels(12.5 * requestedNotationScale) / 12.5
         let lyricScale = max(
             0.5,
             min(
                 3.5,
-                CGFloat(metrics.lyricScale) * notationScale
+                CGFloat(metrics.lyricScale) * requestedNotationScale
             )
         )
         let lyricFontName = metrics.lyricFontName
@@ -343,6 +450,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let glyphScale = notationScale / 16
         let staffStep = 100 * glyphScale // one GABC pitch step / half staff-space
         let staffGap = staffStep * 2
+        let staffLineWidth = grid.lineWidth(max(0.72, 0.78 * notationScale))
         let sidePadding = 8 * notationScale
         let clefColumn = 18 * notationScale
         let custosColumn = 10 * notationScale
@@ -354,17 +462,22 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let spacing = Spacing(staffSpace: staffGap, hyphen: hyphenWidth)
         let openingInitial = openingInitial(
             in: score,
-            annotation: Self.openingLabel(forMode: openingLabel)
+            annotation: Self.openingLabel(forMode: openingLabel, opensPiece: opensPiece),
+            opensPiece: opensPiece
         )
         let initialScale = max(notationScale, min(1.35, lyricScale))
         let initialFontSize = 56 * initialScale
         let initialAnnotationFontSize = 13 * max(notationScale, min(1.25, lyricScale))
+        // The initial and its annotation are bold, as the books set them.
         let initialWidth = openingInitial.map {
-            measureLyric($0.text, fontSize: initialFontSize, fontName: lyricFontName)
+            measureLyric($0.text, style: .accented, fontSize: initialFontSize, fontName: lyricFontName)
         } ?? 0
         let initialAnnotationWidth = openingInitial?.annotation.map {
-            measureLyric($0, fontSize: initialAnnotationFontSize, fontName: lyricFontName)
+            measureLyric($0, style: .accented, fontSize: initialAnnotationFontSize, fontName: lyricFontName)
         } ?? 0
+        let lyricFont = CTFontCreateWithName(lyricFontName as CFString, 100, nil)
+        let ascent = CTFontGetAscent(lyricFont) / 100
+        let capHeight = CTFontGetCapHeight(lyricFont) / 100
         let initialColumn = openingInitial.map { _ in
             max(
                 38 * notationScale,
@@ -418,7 +531,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 lyricHeight: lyricHeight,
                 openingInitialFontSize: lineIndex == 0 && openingInitial != nil
                     ? initialFontSize
-                    : nil
+                    : nil,
+                grid: grid,
+                staffLineWidth: staffLineWidth
             )
         }
         var lineOrigins: [CGFloat] = []
@@ -475,7 +590,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                         kind: .staff,
                         start: CGPoint(x: staffLeft, y: y),
                         end: CGPoint(x: width - sidePadding, y: y),
-                        lineWidth: max(0.72, 0.78 * notationScale)
+                        lineWidth: staffLineWidth
                     )
                 )
             }
@@ -497,24 +612,30 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             )
 
             if lineIndex == 0, let openingInitial {
+                // The initial stands on the words' baseline, and its
+                // annotation is centred over it, its capitals about the top
+                // line, as in the Liber.
+                let lyricBaseline = lyricY + ascent * lyricFontSize
+                let annotationBaseline = staffTop - 0.14 * staffGap + capHeight * initialAnnotationFontSize / 2
                 initials.append(
                     GregorianPlacedInitial(
                         text: openingInitial.text,
                         annotation: openingInitial.annotation,
                         annotationOrigin: openingInitial.annotation.map { _ in
                             CGPoint(
-                                x: sidePadding + (initialColumn - initialWidth) / 2,
-                                y: max(0, staffTop - initialAnnotationFontSize)
+                                x: sidePadding + (initialColumn - initialAnnotationWidth) / 2,
+                                y: max(0, annotationBaseline - ascent * initialAnnotationFontSize)
                             )
                         },
                         annotationFontSize: initialAnnotationFontSize,
                         origin: CGPoint(
                             x: sidePadding + (initialColumn - initialWidth) / 2,
-                            y: staffTop
+                            y: lyricBaseline - ascent * initialFontSize
                         ),
                         width: initialWidth,
                         fontSize: initialFontSize,
                         fontName: lyricFontName,
+                        style: .accented,
                         neumeID: openingInitial.neumeID
                     )
                 )
@@ -658,7 +779,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             }
         }
 
-        strokes = mergeLedgerLines(strokes, scale: notationScale)
+        strokes = grid.snap(mergeLedgerLines(strokes, scale: notationScale))
         let neumes = makeHitFrames(rawNeumes, width: width, scale: notationScale)
         return GregorianLayout(
             size: CGSize(width: width, height: max(64, contentHeight)),
@@ -700,6 +821,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         let forcesBreak: Bool
         /// The notes beside a neume that its engraving needs.
         var context = NeumeContext()
+        /// How far the unit's ink reaches below the staff's bottom line.
+        var inkBelowStaff: CGFloat = 0
 
         var neume: GregorianNeume? {
             guard case let .neume(neume) = element else { return nil }
@@ -842,9 +965,10 @@ public struct GregorianEngravingLayoutEngine: Sendable {
 
     private func openingInitial(
         in score: GregorianScore,
-        annotation: String?
+        annotation: String?,
+        opensPiece: Bool
     ) -> OpeningInitial? {
-        guard let annotation,
+        guard annotation != nil || opensPiece,
               let neume = score.neumes.first(where: { !$0.lyric.isEmpty }),
               let initialIndex = neume.lyric.firstIndex(where: \.isUppercase) else {
             return nil
@@ -855,10 +979,12 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         }) else {
             return nil
         }
+        // The rest of the word the initial begins is small, however the
+        // GABC writes it (PU-ER).
         return OpeningInitial(
             text: String(neume.lyric[initialIndex]),
             annotation: annotation,
-            remainder: String(neume.lyric[neume.lyric.index(after: initialIndex)...]),
+            remainder: neume.lyric[neume.lyric.index(after: initialIndex)...].lowercased(),
             neumeID: neume.id
         )
     }
@@ -871,7 +997,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         staffGap: CGFloat,
         notationScale: CGFloat,
         lyricHeight: CGFloat,
-        openingInitialFontSize: CGFloat?
+        openingInitialFontSize: CGFloat?,
+        grid: PixelGrid,
+        staffLineWidth: CGFloat
     ) -> LineVerticalMetrics {
         let notes = units.compactMap(\.neume).flatMap(\.notes)
         let accidentalPitches = units.compactMap { unit -> Int? in
@@ -880,7 +1008,6 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         }
         let pitches = notes.map(\.pitch) + accidentalPitches + (custosPitch.map { [$0] } ?? [])
         let highestPitch = pitches.max() ?? 9
-        let lowestPitch = pitches.min() ?? 3
         var topInset = max(
             11 * notationScale,
             CGFloat(max(0, highestPitch - 9)) * staffStep + 10 * notationScale
@@ -895,18 +1022,27 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 CGFloat(highestCustos - 9) * staffStep + stem + 2 * notationScale
             )
         }
-        let belowStaff = lowestPitch < 3
-            ? CGFloat(3 - lowestPitch) * staffStep + 10 * notationScale
-            : 0
-        let lyricOffset = belowStaff > 0
-            ? belowStaff + 6 * notationScale
-            : 2 * notationScale
+        // The words stand as far below the lowest ink as they stand below a
+        // note on the bottom line, and no nearer the staff.
+        var inkBelow = units.map(\.inkBelowStaff).max() ?? 0
+        if let custosPitch {
+            let custos = GregorianGlyphCatalog.definition(for: .custosShort)
+            let y = staffGap * 1.5 - CGFloat(custosPitch - 6) * staffStep
+            inkBelow = max(inkBelow, y + (custos.bounds.height - custos.origin.y) * glyphScale - staffGap * 3)
+        }
+        let punctum = GregorianGlyphCatalog.definition(for: .punctumQuadratum)
+        let headBelowLine = (punctum.bounds.height - punctum.origin.y) * glyphScale
+        let lyricOffset = max(2 * notationScale, inkBelow - headBelowLine + 2 * notationScale)
+        // On a screen, each staff begins on a whole pixel, and its top line
+        // is set where its edges fall between pixels; the others follow it a
+        // whole number of pixels apart.
+        topInset = grid.centre(topInset, width: staffLineWidth, roundingUp: true)
         let systemGap = 4 * notationScale
         let notationHeight = topInset + staffGap * 3 + lyricOffset + lyricHeight + systemGap
         let initialHeight = openingInitialFontSize.map {
             topInset + ceil($0 * 1.15) + systemGap
         } ?? 0
-        let height = max(notationHeight, initialHeight)
+        let height = grid.roundedUp(max(notationHeight, initialHeight))
         return LineVerticalMetrics(
             topInset: topInset,
             lyricOffset: lyricOffset,
@@ -937,7 +1073,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             lyricFocus: CGFloat = 0,
             join: LyricJoin = .word,
             forcesBreak: Bool = false,
-            context: NeumeContext = NeumeContext()
+            context: NeumeContext = NeumeContext(),
+            inkBottom: CGFloat = 0
         ) -> LayoutUnit {
             LayoutUnit(
                 element: element,
@@ -948,8 +1085,44 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 lyricFocus: lyricFocus,
                 join: join,
                 forcesBreak: forcesBreak,
-                context: context
+                context: context,
+                // Reckoned on a staff whose top line is at 0.
+                inkBelowStaff: max(0, inkBottom - 3 * staffSpace)
             )
+        }
+
+        // A first syllable that the initial takes whole leaves a hyphen
+        // under its notes where its word goes on, as Gregorio and Exsurge
+        // set it.
+        let openingHyphen: Bool = {
+            guard let openingInitial, openingInitial.remainder.isEmpty,
+                  let first = score.neumes.firstIndex(where: { $0.id == openingInitial.neumeID }),
+                  let next = score.neumes[(first + 1)...].first(where: { !$0.lyric.isEmpty }) else {
+                return false
+            }
+            return !next.startsWord && next.syllableID != score.neumes[first].syllableID
+        }()
+        // And so are its other syllables.
+        var openingWord: Set<String> = []
+        // A verse number written before the initial's syllable is left out:
+        // the initial marks the first verse. The others keep theirs.
+        var omittedMarks: Set<Int> = []
+        if let openingInitial,
+           let first = score.elements.firstIndex(where: {
+               if case let .neume(neume) = $0 { return neume.id == openingInitial.neumeID }
+               return false
+           }) {
+            for element in score.elements[(first + 1)...] {
+                if case .lyricMark = element { break }
+                guard case let .neume(neume) = element, !neume.lyric.isEmpty else { continue }
+                if neume.startsWord { break }
+                openingWord.insert(neume.id)
+            }
+            for index in score.elements.indices[..<first] {
+                if case let .lyricMark(mark) = score.elements[index], Self.isVerseNumber(mark.text) {
+                    omittedMarks.insert(index)
+                }
+            }
         }
 
         // Each neume's context: the last note of the neume of its syllable
@@ -969,7 +1142,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             }
         }
 
-        return elements.enumerated().map { elementIndex, element in
+        return elements.enumerated().compactMap { elementIndex, element in
             switch element {
             case .clef:
                 return unit(element, inkRight: 24 * notationScale)
@@ -977,17 +1150,20 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 let definition = GregorianGlyphCatalog.definition(
                     for: Self.glyphKind(for: accidental.kind).catalogName
                 )
+                let y = staffSpace * 1.5 - CGFloat(accidental.pitch - 6) * punctum
                 return unit(
                     element,
                     // The accidental, and the space that parts it from its
                     // note: about a quarter of a staff space, as Gregorio's.
-                    inkRight: definition.bounds.width * glyphScale * 0.9 + 0.27 * staffSpace
+                    inkRight: definition.bounds.width * glyphScale * 0.9 + 0.27 * staffSpace,
+                    inkBottom: y + (definition.bounds.height - definition.origin.y) * glyphScale * 0.9
                 )
             case let .division(division):
                 return unit(element, inkRight: (division == .final ? 17 : 12) * notationScale)
             case .forcedBreak:
                 return unit(element, inkRight: 0, forcesBreak: true)
             case let .lyricMark(mark):
+                if omittedMarks.contains(elementIndex) { return nil }
                 previousLyric = (mark.text, nil)
                 return unit(
                     element,
@@ -1002,7 +1178,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 )
             case let .neume(neume):
                 let opensScore = neume.id == openingInitial?.neumeID
-                let lyricText = opensScore ? openingInitial?.remainder ?? neume.lyric : neume.lyric
+                let lyricText = opensScore
+                    ? (openingHyphen ? "-" : openingInitial?.remainder ?? neume.lyric)
+                    : openingWord.contains(neume.id) ? neume.lyric.lowercased() : neume.lyric
                 // The opening initial takes the syllable's first letter.
                 let centeredRange = opensScore
                     ? neume.centeredRange.flatMap { range in
@@ -1045,10 +1223,17 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     lyricWidth: lyric.width,
                     lyricFocus: lyric.focus,
                     join: join,
-                    context: context
+                    context: context,
+                    inkBottom: ink.bottom
                 )
             }
         }
+    }
+
+    /// Whether a mark is a verse number: `1.`, `12`.
+    private static func isVerseNumber(_ text: String) -> Bool {
+        let digits = text.hasSuffix(".") ? text.dropLast() : Substring(text)
+        return !digits.isEmpty && digits.allSatisfy { ("0"..."9").contains($0) }
     }
 
     private static func inkRight(of composition: Composition) -> CGFloat {
@@ -1070,13 +1255,14 @@ public struct GregorianEngravingLayoutEngine: Sendable {
     }
 
     /// A neume's ink, from where its notation begins: its notes, with their
-    /// dots, episemata and ledger lines.
+    /// dots, episemata and ledger lines; and its lowest, on a staff whose top
+    /// line is at 0.
     private func notationInk(
         _ neume: GregorianNeume,
         context: NeumeContext,
         glyphScale: CGFloat,
         notationScale: CGFloat
-    ) -> (left: CGFloat, right: CGFloat) {
+    ) -> (left: CGFloat, right: CGFloat, bottom: CGFloat) {
         let staffStep = 100 * glyphScale
         let staffGap = staffStep * 2
         let composition = compose(
@@ -1093,8 +1279,12 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         )
         let left = Self.inkLeft(of: composition)
         let right = Self.inkRight(of: composition)
-        guard left.isFinite, right.isFinite, right > left else { return (0, staffStep) }
-        return (left, right)
+        let bottom = max(
+            composition.inkFrame.isNull ? 0 : composition.inkFrame.maxY,
+            composition.strokes.map { max($0.start.y, $0.end.y) + $0.lineWidth / 2 }.max() ?? 0
+        )
+        guard left.isFinite, right.isFinite, right > left else { return (0, staffStep, bottom) }
+        return (left, right, bottom)
     }
 
     /// For each unit, whether a staff that ends before it divides a word:
@@ -2690,8 +2880,9 @@ public struct GregorianEngravingLayoutEngine: Sendable {
     }
 
     /// The ledger lines a note at `noteY` needs, as wide as its head at
-    /// `frame`. They follow the note's pitch, not its glyph, whose stem or
-    /// swash may reach far from the head.
+    /// `frame` and a staff line's weight, as the books draw them. They
+    /// follow the note's pitch, not its glyph, whose stem or swash may reach
+    /// far from the head.
     private func appendLedgerLines(
         for frame: CGRect,
         noteY: CGFloat,
@@ -2710,7 +2901,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                         kind: .ledger,
                         start: CGPoint(x: frame.minX - 3 * scale, y: y),
                         end: CGPoint(x: frame.maxX + 3 * scale, y: y),
-                        lineWidth: scale,
+                        lineWidth: max(0.72, 0.78 * scale),
                         eventID: eventID
                     )
                 )
@@ -2724,7 +2915,7 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                         kind: .ledger,
                         start: CGPoint(x: frame.minX - 3 * scale, y: y),
                         end: CGPoint(x: frame.maxX + 3 * scale, y: y),
-                        lineWidth: scale,
+                        lineWidth: max(0.72, 0.78 * scale),
                         eventID: eventID
                     )
                 )

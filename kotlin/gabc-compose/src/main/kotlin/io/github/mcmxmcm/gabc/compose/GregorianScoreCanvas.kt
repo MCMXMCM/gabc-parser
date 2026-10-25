@@ -218,10 +218,10 @@ private fun DrawScope.drawTile(tile: GregorianScoreDrawing.Tile, style: Gregoria
         if (annotation != null && annotationOrigin != null) {
             drawText(
                 annotation, annotationOrigin.x, annotationOrigin.y,
-                paints.paint(initial.fontName, GregorianLyricStyle.Regular, initial.annotationFontSize, style.ink),
+                paints.paint(initial.fontName, initial.style, initial.annotationFontSize, style.ink),
             )
         }
-        drawText(initial.text, initial.origin.x, initial.origin.y, paints.paint(initial.fontName, GregorianLyricStyle.Regular, initial.fontSize, style.ink))
+        drawText(initial.text, initial.origin.x, initial.origin.y, paints.paint(initial.fontName, initial.style, initial.fontSize, style.ink))
     }
 }
 
@@ -245,6 +245,6 @@ private fun DrawScope.drawHighlight(ink: HighlightInk, color: Color, paints: Lyr
         drawText(lyric.text, lyric.origin.x, lyric.origin.y, paints.paint(lyric.fontName, lyric.style, lyric.fontSize, color))
     }
     for (initial in ink.initials) {
-        drawText(initial.text, initial.origin.x, initial.origin.y, paints.paint(initial.fontName, GregorianLyricStyle.Regular, initial.fontSize, color))
+        drawText(initial.text, initial.origin.x, initial.origin.y, paints.paint(initial.fontName, initial.style, initial.fontSize, color))
     }
 }
