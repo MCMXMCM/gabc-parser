@@ -28,6 +28,15 @@ final class ScreenAndPageTests: XCTestCase {
         return (glyphs + strokes).max() ?? 0
     }
 
+    /// The highest ink of a layout's notes and signs, its staff lines aside.
+    private func highestInk(_ layout: GregorianLayout) -> CGFloat {
+        let glyphs = layout.glyphs.map(\.frame.minY)
+        let strokes = layout.strokes
+            .filter { $0.kind != .staff }
+            .map { min($0.start.y, $0.end.y) - $0.lineWidth / 2 }
+        return (glyphs + strokes).min() ?? 0
+    }
+
     func testTheWordsStandAsFarBelowTheLowestInkAsBelowANoteOnTheBottomLine() throws {
         // d is on the bottom line, c in the space below it and b on a ledger
         // line; an ictus stands below its note, and a clivis hangs from its
@@ -54,6 +63,22 @@ final class ScreenAndPageTests: XCTestCase {
             words - bottomStaff.frame.maxY,
             accuracy: 0.01
         )
+    }
+
+    func testAStaffsBandHoldsAllItsInk() throws {
+        // The episema of a liquescent clivis above the staff rises higher
+        // than its notes leave room for: the staff is set lower to hold it,
+        // a point to spare.
+        let lifted = try layout("k_i~")
+        let liftedStaff = try XCTUnwrap(lifted.staffs.first)
+        XCTAssertGreaterThan(liftedStaff.frame.minY, try XCTUnwrap(layout("ki~").staffs.first).frame.minY)
+        let episema = try XCTUnwrap(lifted.strokes.first { $0.kind == .episema })
+        XCTAssertGreaterThanOrEqual(episema.start.y - episema.lineWidth / 2, liftedStaff.systemFrame.minY + 1 - 0.01)
+        for notation in ["k_i~", "k_", "l_", "j_", "j"] {
+            let layout = try layout(notation)
+            let staff = try XCTUnwrap(layout.staffs.first, notation)
+            XCTAssertGreaterThanOrEqual(highestInk(layout), staff.systemFrame.minY, notation)
+        }
     }
 
     func testOnAScreenTheStaffAndItsStrokesFallOnWholePixels() throws {

@@ -32,13 +32,13 @@ private class PixelGrid(
     val scale: Float?,
 ) {
     /** The nearest length of whole pixels, one at least. */
-    fun wholePixels(length: Float): Float = scale?.let { max(1f, rounded(length * it)) / it } ?: length
+    fun wholePixels(length: Float): Float = scale?.let { max(1f, rounded(steady(length * it))) / it } ?: length
 
     /** A length rounded up to whole pixels. */
-    fun roundedUp(length: Float): Float = scale?.let { ceil(length * it - 0.001f) / it } ?: length
+    fun roundedUp(length: Float): Float = scale?.let { ceil(steady(length * it) - 0.001f) / it } ?: length
 
     /** A line's width in whole pixels, two at least. */
-    fun lineWidth(width: Float): Float = scale?.let { max(2f, rounded(width * it)) / it } ?: width
+    fun lineWidth(width: Float): Float = scale?.let { max(2f, rounded(steady(width * it))) / it } ?: width
 
     /**
      * Where a line of [width], already whole pixels, is centred near [position] so that its edges fall between pixels:
@@ -46,8 +46,8 @@ private class PixelGrid(
      */
     fun centre(position: Float, width: Float, roundingUp: Boolean = false): Float {
         val scale = scale ?: return position
-        val offset = if (rounded(width * scale) % 2f == 0f) 0f else 0.5f
-        val pixels = position * scale - offset
+        val offset = if (rounded(steady(width * scale)) % 2f == 0f) 0f else 0.5f
+        val pixels = steady(position * scale - offset)
         return ((if (roundingUp) ceil(pixels - 0.001f) else rounded(pixels)) + offset) / scale
     }
 
@@ -73,6 +73,9 @@ private class PixelGrid(
     private companion object {
         /** Rounded half away from zero, as Swift rounds. */
         fun rounded(value: Float): Float = if (value >= 0) floor(value + 0.5f) else -floor(-value + 0.5f)
+
+        /** A count of pixels to a thousandth, so that a place a hair's breadth either side of a pixel's middle rounds alike in every language. */
+        fun steady(pixels: Float): Float = rounded(pixels * 1000f) / 1000f
     }
 }
 
@@ -506,6 +509,8 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
         val context: NeumeContext = NeumeContext(),
         /** How far the unit's ink reaches below the staff's bottom line. */
         val inkBelowStaff: Float = 0f,
+        /** How far the unit's ink reaches above the staff's top line. */
+        val inkAboveStaff: Float = 0f,
     ) {
         val neume: GregorianNeume? get() = (element as? GregorianNotationElement.Neume)?.neume
 
@@ -662,6 +667,9 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             val stem = GregorianGlyphCatalog.definition(GregorianGlyphName.CustosShort).origin.y * glyphScale
             topInset = max(topInset, (highestCustos - 9) * staffStep + stem + 2 * notationScale)
         }
+        // A mark that rises higher than the notes leave room for, as an episema set clear of a ledger line may, sets the
+        // staff lower still: a staff's band holds all its ink, a point to spare.
+        units.maxOfOrNull { it.inkAboveStaff }?.let { topInset = max(topInset, it + notationScale) }
         // The words stand as far below the lowest ink as they stand below a note on the bottom line, and no nearer the
         // staff.
         var inkBelow = units.maxOfOrNull { it.inkBelowStaff } ?: 0f
@@ -707,10 +715,12 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             forcesBreak: Boolean = false,
             context: NeumeContext = NeumeContext(),
             inkBottom: Float = 0f,
+            inkTop: Float = 0f,
         ) = LayoutUnit(
             element, inkLeft, inkRight, lyricText, lyricWidth, lyricFocus, join, forcesBreak, context,
             // Reckoned on a staff whose top line is at 0.
             inkBelowStaff = max(0f, inkBottom - 3 * staffSpace),
+            inkAboveStaff = max(0f, -inkTop),
         )
 
         // A first syllable that the initial takes whole leaves a hyphen under its notes where its word goes on, as
@@ -831,18 +841,19 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
                         join = join,
                         context = context,
                         inkBottom = ink.bottom,
+                        inkTop = ink.top,
                     )
                 }
             }
         }
     }
 
-    /** A neume's ink, from where its notation begins and to where it ends, and its lowest. */
-    private class NotationInk(val left: Float, val right: Float, val bottom: Float)
+    /** A neume's ink, from where its notation begins and to where it ends, and its lowest and highest. */
+    private class NotationInk(val left: Float, val right: Float, val bottom: Float, val top: Float)
 
     /**
      * A neume's ink, from where its notation begins: its notes, with their dots, episemata and ledger lines; and its
-     * lowest, on a staff whose top line is at 0.
+     * lowest and highest, on a staff whose top line is at 0.
      */
     private fun notationInk(neume: GregorianNeume, context: NeumeContext, glyphScale: Float, notationScale: Float): NotationInk {
         val staffStep = 100 * glyphScale
@@ -857,8 +868,12 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             composition.inkFrame?.bottom ?: 0f,
             composition.strokes.maxOfOrNull { max(it.start.y, it.end.y) + it.lineWidth / 2 } ?: 0f,
         )
-        if (left == Float.MAX_VALUE || right == -Float.MAX_VALUE || right <= left) return NotationInk(0f, staffStep, bottom)
-        return NotationInk(left, right, bottom)
+        val top = min(
+            composition.inkFrame?.top ?: 0f,
+            composition.strokes.minOfOrNull { min(it.start.y, it.end.y) - it.lineWidth / 2 } ?: 0f,
+        )
+        if (left == Float.MAX_VALUE || right == -Float.MAX_VALUE || right <= left) return NotationInk(0f, staffStep, bottom, top)
+        return NotationInk(left, right, bottom, top)
     }
 
     /**
@@ -2336,8 +2351,11 @@ public class GregorianEngravingLayoutEngine(private val measurer: GregorianLyric
             val concludingLetter = conclusion.firstOrNull() ?: return null
             if (concludingLetter !in 'a'..'g') return null
             val variant = conclusion.drop(1)
-            if (!(variant.isEmpty() || variant.all(::isNumber) || variant == "star" || variant == "-")) return null
-            return trimmed.uppercase()
+            if (!(variant.isEmpty() || variant.all(::isNumber) || variant == "star" || variant == "*" || variant == "-")) return null
+            val label = trimmed.uppercase()
+            // The books mark a starred ending with an asterisk (8 G*), which the mode may spell out; a label so marked
+            // reads as itself.
+            return if (variant == "star" && label.endsWith("STAR")) label.dropLast(4).trimEnd() + "*" else label
         }
 
         /**

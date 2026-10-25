@@ -283,7 +283,7 @@ final class GregorianLayoutTests: XCTestCase {
         XCTAssertEqual(layout.staffs[0].frame.minX, 8, accuracy: 0.01)
     }
 
-    func testOpeningLabelRequiresModeAndConclusion() {
+    func testOpeningLabelRequiresModeAndConclusion() throws {
         XCTAssertNil(GregorianEngravingLayoutEngine.openingLabel(forMode: nil))
         XCTAssertNil(GregorianEngravingLayoutEngine.openingLabel(forMode: "6"))
         XCTAssertNil(GregorianEngravingLayoutEngine.openingLabel(forMode: "6-alt"))
@@ -300,6 +300,23 @@ final class GregorianLayoutTests: XCTestCase {
             GregorianEngravingLayoutEngine.openingLabel(forMode: "4-alt-d"),
             "4-ALT-D"
         )
+        XCTAssertEqual(
+            GregorianEngravingLayoutEngine.openingLabel(forMode: "8gstar"),
+            "8G*"
+        )
+        XCTAssertEqual(
+            GregorianEngravingLayoutEngine.openingLabel(forMode: "4e star"),
+            "4E*"
+        )
+        // The layout reads the label it is given as a mode: each reads as
+        // itself.
+        for mode in ["8g", "7c2", "4-alt-d", "8gstar"] {
+            let label = GregorianEngravingLayoutEngine.openingLabel(forMode: mode)
+            XCTAssertEqual(GregorianEngravingLayoutEngine.openingLabel(forMode: label), label, mode)
+        }
+        let score = try GregorianScoreParser.parse(gabc: "%% (c4) Mis(g)sus(h) est(h) (::)")
+        let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390, openingLabel: "8G*")
+        XCTAssertEqual(layout.initials.first?.annotation, "8G*")
     }
 
     func testScoreModeAppearsAboveInitialAndOverridesVerseNumber() throws {

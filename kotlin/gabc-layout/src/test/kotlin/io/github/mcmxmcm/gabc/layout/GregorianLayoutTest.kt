@@ -311,6 +311,22 @@ class GregorianLayoutTest {
             "4-ALT-D",
             GregorianEngravingLayoutEngine.openingLabel("4-alt-d"),
         )
+        assertEquals(
+            "8G*",
+            GregorianEngravingLayoutEngine.openingLabel("8gstar"),
+        )
+        assertEquals(
+            "4E*",
+            GregorianEngravingLayoutEngine.openingLabel("4e star"),
+        )
+        // The layout reads the label it is given as a mode: each reads as itself.
+        for (mode in listOf("8g", "7c2", "4-alt-d", "8gstar")) {
+            val label = GregorianEngravingLayoutEngine.openingLabel(mode)
+            assertEquals(mode, label, GregorianEngravingLayoutEngine.openingLabel(label))
+        }
+        val score = GregorianScoreParser.parse("%% (c4) Mis(g)sus(h) est(h) (::)")
+        val layout = GregorianEngravingLayoutEngine().layout(score, width = 390f, openingLabel = "8G*")
+        assertEquals("8G*", layout.initials.firstOrNull()?.annotation)
     }
 
     @Test

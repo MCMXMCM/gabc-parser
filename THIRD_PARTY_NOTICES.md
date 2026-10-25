@@ -6,12 +6,13 @@ distributes the following material under its own terms.
 ## Exsurge
 
 The Gregorian glyph geometry in
-`Sources/GABCLayout/GeneratedGregorianGlyphCatalog.swift` and
+`Sources/GABCLayout/GeneratedGregorianGlyphCatalog.swift`,
 `kotlin/gabc-layout/src/main/kotlin/io/github/mcmxmcm/gabc/layout/GeneratedGregorianGlyphCatalog.kt`
-is converted from the canonical Gregorian SVG glyph outlines of Exsurge (the
-maintained bbloomf fork, revision `0c39f61df0e7c843f467250976338cac62f94e62`)
-by `Scripts/generate-glyphs.mjs`. No Exsurge JavaScript, web view or font is
-included.
+and `typescript/src/GeneratedGregorianGlyphCatalog.ts` (compiled into
+`typescript/dist`) is converted from the canonical Gregorian SVG glyph
+outlines of Exsurge (the maintained bbloomf fork, revision
+`0c39f61df0e7c843f467250976338cac62f94e62`) by `Scripts/generate-glyphs.mjs`.
+No Exsurge JavaScript, web view or font is included.
 
 Author: Fr. Matthew Spencer, OSJ <mspencer@osjusa.org>
 

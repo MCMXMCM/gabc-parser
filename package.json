@@ -1,0 +1,35 @@
+{
+  "name": "gabc-parser",
+  "version": "0.8.0",
+  "description": "Parses GABC chant notation and engraves it in square notation, as the Swift package and the Kotlin libraries beside it do.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MCMXMCM/gabc-parser.git"
+  },
+  "exports": {
+    ".": {
+      "types": "./typescript/dist/index.d.ts",
+      "default": "./typescript/dist/index.js"
+    }
+  },
+  "files": [
+    "typescript/dist",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "tsc -p typescript/tsconfig.build.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc -p typescript",
+    "test": "vitest run --root typescript"
+  },
+  "devDependencies": {
+    "@types/fontkit": "^2.0.9",
+    "@types/node": "^24.19.2",
+    "fontkit": "^2.0.4",
+    "typescript": "~5.9.2",
+    "vitest": "^4.1.11"
+  }
+}

@@ -11,3 +11,7 @@ DerivedData/
 /kotlin/build
 /kotlin/*/build
 /kotlin/local.properties
+
+# The TypeScript package: its dependencies, and what `npm run build` writes.
+node_modules/
+typescript/dist/

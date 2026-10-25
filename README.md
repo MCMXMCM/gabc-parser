@@ -1,32 +1,34 @@
 # gabc-parser
 
 Parse [GABC](https://gregorio-project.github.io/gabc/) chant notation,
-engrave it natively, and draw it: in Swift with SwiftUI on iOS and macOS, and
-in Kotlin with Jetpack Compose on Android.
+engrave it natively, and draw it: in Swift with SwiftUI on iOS and macOS, in
+Kotlin with Jetpack Compose on Android, and in TypeScript as SVG on the web.
 
 GABC is the plain-text notation of the Gregorio project, in which GregoBase
 and most digital chant sources are written. Each library reads a score into a
 model of clefs, neumes, lyrics and divisions; lays it out on four-line staffs
 at any width, drawing Exsurge's glyph outlines as vector paths; and draws the
-result. There is no web view, JavaScript or music font in the rendering path.
+result. There is no music font in the rendering path, and on iOS and Android
+no web view.
 
-The Swift and Kotlin libraries are one design in two languages. They are kept
-to the same behaviour, run the same tests against the same fixtures, and
-engrave from one generated glyph catalog, so a score is laid out alike on an
-iPhone and an Android phone.
+The Swift, Kotlin and TypeScript libraries are one design in three languages.
+They are kept to the same behaviour, run the same tests against the same
+fixtures, and engrave from one generated glyph catalog, so a score is laid
+out alike on an iPhone, an Android phone and a web page.
 
-| | Swift | Kotlin |
-| --- | --- | --- |
-| Parsing | `GABCParser` | `gabc-parser` |
-| Engraving | `GABCLayout` | `gabc-layout` |
-| The lyrics' face, EB Garamond | `GABCLyricFont` | `gabc-lyric-font` |
-| Drawing | `GABCSwiftUI` (SwiftUI) | `gabc-compose` (Jetpack Compose) |
-| Requires | Swift 6 tools (Xcode 16 or later); iOS 17 or macOS 14 | Java 17; Android 8 (API 26) for the font and the views |
-| Installed with | Swift Package Manager | Gradle, from [JitPack](https://jitpack.io) |
+| | Swift | Kotlin | TypeScript |
+| --- | --- | --- | --- |
+| Parsing | `GABCParser` | `gabc-parser` | `gabc-parser` |
+| Engraving | `GABCLayout` | `gabc-layout` | `gabc-parser` |
+| The lyrics' face, EB Garamond | `GABCLyricFont` | `gabc-lyric-font` | the page's own |
+| Drawing | `GABCSwiftUI` (SwiftUI) | `gabc-compose` (Jetpack Compose) | `gabc-parser` (SVG) |
+| Requires | Swift 6 tools (Xcode 16 or later); iOS 17 or macOS 14 | Java 17; Android 8 (API 26) for the font and the views | ES2022; a canvas to measure lyrics |
+| Installed with | Swift Package Manager | Gradle, from [JitPack](https://jitpack.io) | npm, from this repository |
 
 - [Swift](#swift)
 - [Kotlin](#kotlin)
-- [GABC coverage](#gabc-coverage), the same in both
+- [TypeScript](#typescript)
+- [GABC coverage](#gabc-coverage), the same in all three
 
 ## Swift
 
@@ -48,7 +50,7 @@ Add the package in Xcode (File ▸ Add Package Dependencies…, with
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.7.0")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.8.0")
 ],
 targets: [
     .target(
@@ -220,7 +222,7 @@ and in the app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.7.0")
+    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.8.0")
 }
 ```
 
@@ -290,9 +292,78 @@ The model is the Swift one. A compiled timeline is a `GregorianTimeline` of
 `GregorianTimelineEvent`s (`id`, `syllableId`, `relativePitch`), passed to
 `GregorianScoreParser.parse(gabc, timeline)`.
 
+## TypeScript
+
+One package, `gabc-parser`, holds the parser, the engraver and a drawing as
+SVG. It is ported from the Kotlin libraries line for line and held to their
+tests, and it is ES modules (ES2022) with type declarations. The engraver
+measures lyrics through a `GregorianLyricMeasurer`: in a browser, a canvas
+(`createCanvasLyricMeasurer()`), in the fonts the page has loaded.
+
+### Installation
+
+npm installs the package from this repository's tags, building it as it
+installs:
+
+```sh
+npm install github:MCMXMCM/gabc-parser#0.8.0
+```
+
+### Drawing a score
+
+```ts
+import {
+  GregorianEngravingLayoutEngine,
+  GregorianScoreParser,
+  createCanvasLyricMeasurer,
+  gregorianScoreSVG,
+} from "gabc-parser";
+
+// The lyrics are measured in the page's fonts: load EB Garamond first, with
+// its bold for accented syllables and its italic for preparatory ones.
+await Promise.all(["21px", "bold 21px", "italic 21px"].map((size) => document.fonts.load(`${size} 'EB Garamond'`)));
+const score = GregorianScoreParser.parse(gabc);
+const engine = new GregorianEngravingLayoutEngine(createCanvasLyricMeasurer());
+const layout = engine.layout(score, element.clientWidth, {
+  metrics: { displayScale: devicePixelRatio },
+  openingLabel: "8g",
+});
+element.innerHTML = gregorianScoreSVG(layout, { rubric: "#b3261e" });
+```
+
+The drawing has a group for each staff and, within it, for each neume; its
+elements carry `data-staff`, `data-neume` and `data-event`, and each neume's
+group lists its notes in `data-events`, so that a page can light the note being
+sung, or print a staff by itself. Notes, staff and words take the page's text
+colour unless `ink` is given. A face other than EB Garamond is named by
+`lyricFontName` and mapped to its CSS family by `families`.
+`neumeAt(layout, point)` finds the neume a tap falls on, and
+`GregorianScoreHighlight.of(eventId, score, layout)` what to light while a note
+is sung, as in the other languages; `glyphPath(glyph)` and
+`glyphPathData(glyph)` give a glyph's outlines for drawing it another way.
+
+### Parsing
+
+```ts
+const score = GregorianScoreParser.parse(gabc);
+for (const element of score.elements) {
+  if (element.kind === "neume") {
+    console.log(element.neume.lyric, element.neume.form, element.neume.notes.map((note) => note.pitch));
+  }
+}
+console.log(score.lyricText); // Deus in adjutórium meum inténde.
+```
+
+The model is the Swift and Kotlin one in TypeScript's terms: enumerations are
+string unions in the Swift spelling (`"virga"`, `"pesQuassus"`), a score's
+elements a union keyed by `kind`, and what Swift leaves `nil` is `null`. A
+compiled timeline is passed as `parse(gabc, { timeline })`, and a score
+identifier as `parse(gabc, { scoreId })`. Errors are
+`GregorianScoreParserError`s whose `reason` says what failed, and where.
+
 ## GABC coverage
 
-Both languages read the same notation, and fail on the same tokens.
+The three languages read the same notation, and fail on the same tokens.
 
 - The header up to `%%` is skipped; text without `%%` is read as notation.
   `%` comments are dropped.
@@ -364,15 +435,17 @@ fails the parse with an unsupported-token error and its offset.
 swift test
 cd kotlin && ./gradlew test                   # the parser, the layout, the drawing
 cd kotlin && ./gradlew connectedAndroidTest   # the font and the views, on a device
+npm install && npm test                       # the TypeScript port
 ```
 
-The Kotlin tests read the Swift tests' fixtures and measure lyrics in the
-font `GABCLyricFont` carries. A change to either language is made in the
-other as well, with its tests.
+The Kotlin and TypeScript tests read the Swift tests' fixtures and measure
+lyrics in the font `GABCLyricFont` carries, with the JDK's text layout and
+with fontkit. A change to one language is made in the others as well, with
+its tests.
 
-The glyph catalog is generated from Exsurge's SVG glyph outlines, for Swift
-and Kotlin alike; to regenerate both, check Exsurge out at the revision named
-in `THIRD_PARTY_NOTICES.md` and run
+The glyph catalog is generated from Exsurge's SVG glyph outlines, for Swift,
+Kotlin and TypeScript alike; to regenerate them, check Exsurge out at the
+revision named in `THIRD_PARTY_NOTICES.md` and run
 `make generate-glyphs EXSURGE_GLYPHS=/path/to/exsurge/src/Exsurge.Glyphs.js`.
 That revision is no longer published, but `src/Exsurge.Glyphs.js` has not
 changed since `eb78bf2` (June 2026), which reproduces the catalog byte for

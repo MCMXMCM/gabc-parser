@@ -7,6 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * The score as a screen shows it and a page would set it: the words no lower than the notes need. A port of the Swift
@@ -26,6 +27,15 @@ class ScreenAndPageTest {
             .filter { it.kind != GregorianStrokeKind.Staff }
             .map { max(it.start.y, it.end.y) + it.lineWidth / 2 }
         return (glyphs + strokes).maxOrNull() ?: 0f
+    }
+
+    /** The highest ink of a layout's notes and signs, its staff lines aside. */
+    private fun highestInk(layout: GregorianLayout): Float {
+        val glyphs = layout.glyphs.map { it.frame.top }
+        val strokes = layout.strokes
+            .filter { it.kind != GregorianStrokeKind.Staff }
+            .map { min(it.start.y, it.end.y) - it.lineWidth / 2 }
+        return (glyphs + strokes).minOrNull() ?: 0f
     }
 
     @Test
@@ -49,6 +59,20 @@ class ScreenAndPageTest {
             high.lyrics.first().origin.y - high.staffs.first().frame.bottom,
             0.01f,
         )
+    }
+
+    @Test
+    fun aStaffsBandHoldsAllItsInk() {
+        // The episema of a liquescent clivis above the staff rises higher than its notes leave room for: the staff is
+        // set lower to hold it, a point to spare.
+        val lifted = layout("k_i~")
+        assertTrue(lifted.staffs.first().frame.top > layout("ki~").staffs.first().frame.top)
+        val episema = lifted.strokes.first { it.kind == GregorianStrokeKind.Episema }
+        assertTrue(episema.start.y - episema.lineWidth / 2 >= lifted.staffs.first().systemFrame.top + 1 - 0.01f)
+        for (notation in listOf("k_i~", "k_", "l_", "j_", "j")) {
+            val layout = layout(notation)
+            assertTrue(notation, highestInk(layout) >= layout.staffs.first().systemFrame.top)
+        }
     }
 
     @Test

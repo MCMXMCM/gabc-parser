@@ -43,22 +43,28 @@ private struct PixelGrid {
     /// Pixels in a point; nil sets everything where it falls.
     let scale: CGFloat?
 
+    /// A count of pixels to a thousandth, so that a place a hair's breadth
+    /// either side of a pixel's middle rounds alike in every language.
+    private func steady(_ pixels: CGFloat) -> CGFloat {
+        (pixels * 1000).rounded() / 1000
+    }
+
     /// The nearest length of whole pixels, one at least.
     func wholePixels(_ length: CGFloat) -> CGFloat {
         guard let scale else { return length }
-        return max(1, (length * scale).rounded()) / scale
+        return max(1, steady(length * scale).rounded()) / scale
     }
 
     /// A length rounded up to whole pixels.
     func roundedUp(_ length: CGFloat) -> CGFloat {
         guard let scale else { return length }
-        return (length * scale - 0.001).rounded(.up) / scale
+        return (steady(length * scale) - 0.001).rounded(.up) / scale
     }
 
     /// A line's width in whole pixels, two at least.
     func lineWidth(_ width: CGFloat) -> CGFloat {
         guard let scale else { return width }
-        return max(2, (width * scale).rounded()) / scale
+        return max(2, steady(width * scale).rounded()) / scale
     }
 
     /// Where a line of `width`, already whole pixels, is centred near
@@ -67,8 +73,8 @@ private struct PixelGrid {
     /// if odd.
     func centre(_ position: CGFloat, width: CGFloat, roundingUp: Bool = false) -> CGFloat {
         guard let scale else { return position }
-        let offset: CGFloat = (width * scale).rounded().truncatingRemainder(dividingBy: 2) == 0 ? 0 : 0.5
-        let pixels = position * scale - offset
+        let offset: CGFloat = steady(width * scale).rounded().truncatingRemainder(dividingBy: 2) == 0 ? 0 : 0.5
+        let pixels = steady(position * scale - offset)
         return ((roundingUp ? (pixels - 0.001).rounded(.up) : pixels.rounded()) + offset) / scale
     }
 
@@ -383,10 +389,15 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         guard variant.isEmpty
                 || variant.allSatisfy(\.isNumber)
                 || variant == "star"
+                || variant == "*"
                 || variant == "-" else {
             return nil
         }
-        return mode.uppercased()
+        let label = mode.uppercased()
+        // The books mark a starred ending with an asterisk (8 G*), which the
+        // mode may spell out; a label so marked reads as itself.
+        guard variant == "star", label.hasSuffix("STAR") else { return label }
+        return label.dropLast(4).trimmingCharacters(in: .whitespaces) + "*"
     }
 
     /// The label printed above the initial of a piece that opens a chant:
@@ -823,6 +834,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
         var context = NeumeContext()
         /// How far the unit's ink reaches below the staff's bottom line.
         var inkBelowStaff: CGFloat = 0
+        /// How far the unit's ink reaches above the staff's top line.
+        var inkAboveStaff: CGFloat = 0
 
         var neume: GregorianNeume? {
             guard case let .neume(neume) = element else { return nil }
@@ -1022,6 +1035,12 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 CGFloat(highestCustos - 9) * staffStep + stem + 2 * notationScale
             )
         }
+        // A mark that rises higher than the notes leave room for, as an
+        // episema set clear of a ledger line may, sets the staff lower still:
+        // a staff's band holds all its ink, a point to spare.
+        if let inkAbove = units.map(\.inkAboveStaff).max() {
+            topInset = max(topInset, inkAbove + notationScale)
+        }
         // The words stand as far below the lowest ink as they stand below a
         // note on the bottom line, and no nearer the staff.
         var inkBelow = units.map(\.inkBelowStaff).max() ?? 0
@@ -1074,7 +1093,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             join: LyricJoin = .word,
             forcesBreak: Bool = false,
             context: NeumeContext = NeumeContext(),
-            inkBottom: CGFloat = 0
+            inkBottom: CGFloat = 0,
+            inkTop: CGFloat = 0
         ) -> LayoutUnit {
             LayoutUnit(
                 element: element,
@@ -1087,7 +1107,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                 forcesBreak: forcesBreak,
                 context: context,
                 // Reckoned on a staff whose top line is at 0.
-                inkBelowStaff: max(0, inkBottom - 3 * staffSpace)
+                inkBelowStaff: max(0, inkBottom - 3 * staffSpace),
+                inkAboveStaff: max(0, -inkTop)
             )
         }
 
@@ -1224,7 +1245,8 @@ public struct GregorianEngravingLayoutEngine: Sendable {
                     lyricFocus: lyric.focus,
                     join: join,
                     context: context,
-                    inkBottom: ink.bottom
+                    inkBottom: ink.bottom,
+                    inkTop: ink.top
                 )
             }
         }
@@ -1255,14 +1277,14 @@ public struct GregorianEngravingLayoutEngine: Sendable {
     }
 
     /// A neume's ink, from where its notation begins: its notes, with their
-    /// dots, episemata and ledger lines; and its lowest, on a staff whose top
-    /// line is at 0.
+    /// dots, episemata and ledger lines; and its lowest and highest, on a
+    /// staff whose top line is at 0.
     private func notationInk(
         _ neume: GregorianNeume,
         context: NeumeContext,
         glyphScale: CGFloat,
         notationScale: CGFloat
-    ) -> (left: CGFloat, right: CGFloat, bottom: CGFloat) {
+    ) -> (left: CGFloat, right: CGFloat, bottom: CGFloat, top: CGFloat) {
         let staffStep = 100 * glyphScale
         let staffGap = staffStep * 2
         let composition = compose(
@@ -1283,8 +1305,12 @@ public struct GregorianEngravingLayoutEngine: Sendable {
             composition.inkFrame.isNull ? 0 : composition.inkFrame.maxY,
             composition.strokes.map { max($0.start.y, $0.end.y) + $0.lineWidth / 2 }.max() ?? 0
         )
-        guard left.isFinite, right.isFinite, right > left else { return (0, staffStep, bottom) }
-        return (left, right, bottom)
+        let top = min(
+            composition.inkFrame.isNull ? 0 : composition.inkFrame.minY,
+            composition.strokes.map { min($0.start.y, $0.end.y) - $0.lineWidth / 2 }.min() ?? 0
+        )
+        guard left.isFinite, right.isFinite, right > left else { return (0, staffStep, bottom, top) }
+        return (left, right, bottom, top)
     }
 
     /// For each unit, whether a staff that ends before it divides a word:
