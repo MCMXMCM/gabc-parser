@@ -36,7 +36,7 @@ out alike on an iPhone, an Android phone and a web page.
 | --- | --- |
 | `GABCParser` | `GregorianScoreParser`: GABC to a `GregorianScore`. Foundation only. |
 | `GABCLayout` | `GregorianEngravingLayoutEngine`: a score to a `GregorianLayout` of placed glyphs, strokes and lyrics; glyph outlines as `CGPath`; hit-testing and highlights. |
-| `GABCLyricFont` | EB Garamond, the lyrics' face, and `GregorianLyricFont.registerBundledFont()`, for a client that does not bundle the font itself. |
+| `GABCLyricFont` | EB Garamond, the lyrics' face, roman and italic, and `GregorianLyricFont.registerBundledFont()`, for a client that does not bundle the font itself. |
 | `GABCSwiftUI` | `GregorianScoreView` and `GregorianScoreCanvas`. Registers EB Garamond before it lays out. |
 
 Each library re-exports the one it builds on, so `import GABCSwiftUI` is all
@@ -50,7 +50,7 @@ Add the package in Xcode (File ▸ Add Package Dependencies…, with
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.8.0")
+    .package(url: "https://github.com/MCMXMCM/gabc-parser.git", from: "0.8.1")
 ],
 targets: [
     .target(
@@ -222,7 +222,7 @@ and in the app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.8.0")
+    implementation("com.github.MCMXMCM.gabc-parser:gabc-compose:0.8.1")
 }
 ```
 
@@ -306,7 +306,7 @@ npm installs the package from this repository's tags, building it as it
 installs:
 
 ```sh
-npm install github:MCMXMCM/gabc-parser#0.8.0
+npm install github:MCMXMCM/gabc-parser#0.8.1
 ```
 
 ### Drawing a score

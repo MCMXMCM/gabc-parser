@@ -1,6 +1,6 @@
 {
   "name": "gabc-parser",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Parses GABC chant notation and engraves it in square notation, as the Swift package and the Kotlin libraries beside it do.",
   "license": "MIT",
   "type": "module",

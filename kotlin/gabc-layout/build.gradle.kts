@@ -33,6 +33,7 @@ dependencies {
 tasks.test {
     systemProperty("gabc.fixtures", rootDir.resolve("../Tests/GABCParserTests/Fixtures").absolutePath)
     systemProperty("gabc.lyricFont", rootDir.resolve("../Sources/GABCLyricFont/Resources/EBGaramond-VariableFont_wght.ttf").absolutePath)
+    systemProperty("gabc.lyricItalicFont", rootDir.resolve("../Sources/GABCLyricFont/Resources/EBGaramond-Italic-VariableFont_wght.ttf").absolutePath)
     systemProperty("java.awt.headless", "true")
 }
 

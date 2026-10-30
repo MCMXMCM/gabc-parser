@@ -13,7 +13,8 @@ let package = Package(
         .library(name: "GABCParser", targets: ["GABCParser"]),
         // A score engraved into placed glyphs, strokes and lyrics.
         .library(name: "GABCLayout", targets: ["GABCLayout"]),
-        // EB Garamond, the lyrics' face, for a client that does not bundle it.
+        // EB Garamond, the lyrics' face, roman and italic, for a client that
+        // does not bundle it.
         .library(name: "GABCLyricFont", targets: ["GABCLyricFont"]),
         // SwiftUI views that draw an engraved score.
         .library(name: "GABCSwiftUI", targets: ["GABCSwiftUI"])
@@ -29,6 +30,7 @@ let package = Package(
             dependencies: ["GABCLayout"],
             resources: [
                 .copy("Resources/EBGaramond-VariableFont_wght.ttf"),
+                .copy("Resources/EBGaramond-Italic-VariableFont_wght.ttf"),
                 .copy("Resources/EBGaramond-OFL.txt")
             ]
         ),

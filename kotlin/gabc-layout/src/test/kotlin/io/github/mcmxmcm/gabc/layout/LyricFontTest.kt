@@ -29,6 +29,24 @@ class LyricFontTest {
     }
 
     @Test
+    fun theBundledItalicIsTheFamilysItalic() {
+        val path = checkNotNull(System.getProperty("gabc.lyricItalicFont")) { "gabc.lyricItalicFont names the bundled italic" }
+        val font = Font.createFont(Font.TRUETYPE_FONT, File(path)).deriveFont(21f)
+        assertEquals("EBGaramond-Italic", font.psName)
+        assertEquals("EB Garamond", font.family)
+    }
+
+    @Test
+    fun aPreparatorySyllableIsMeasuredInTheItalic() {
+        // Without the italic, a preparatory syllable took the roman's width.
+        assertNotEquals(
+            EBGaramondMeasurer.width("pedum", GregorianLyricStyle.Regular, 21f, GregorianLyricFont.DEFAULT_NAME),
+            EBGaramondMeasurer.width("pedum", GregorianLyricStyle.Preparatory, 21f, GregorianLyricFont.DEFAULT_NAME),
+            0.01f,
+        )
+    }
+
+    @Test
     fun lyricsAndInitialsNameTheFontTheyWereMeasuredIn() {
         val score = GregorianScoreParser.parse("%% (c4) Cla(f)ma(g)vé(h)runt(i) iu(j)sti(i) (::)")
         // The Swift engine measures with CoreText, in whatever face the metrics name; the fixture's engine measures
@@ -55,7 +73,7 @@ class LyricFontTest {
     /**
      * Measures a lyric in the face named, as CoreText does for the Swift package's engine: EB Garamond as the fixture
      * measures it, any other face as the JDK finds it by name (a face the JDK cannot find falls back to its own
-     * default, which is not EB Garamond either), with the fixture's kerning, ligatures, bold and slant.
+     * default, which is not EB Garamond either), with the fixture's kerning, ligatures, bold and italic.
      */
     private object NamedFaceMeasurer : GregorianLyricMeasurer {
         private val context = FontRenderContext(null, true, true)

@@ -14,6 +14,9 @@ import { ebGaramondMeasurer } from "./ebGaramondMeasurer.js";
 const fontPath = fileURLToPath(
   new URL("../../Sources/GABCLyricFont/Resources/EBGaramond-VariableFont_wght.ttf", import.meta.url),
 );
+const italicPath = fileURLToPath(
+  new URL("../../Sources/GABCLyricFont/Resources/EBGaramond-Italic-VariableFont_wght.ttf", import.meta.url),
+);
 
 describe("LyricFontTest", () => {
   it("bundledEBGaramondCanBeFoundByName", () => {
@@ -22,6 +25,20 @@ describe("LyricFontTest", () => {
     expect(font.postscriptName).toBe(GregorianLyricFont.defaultName);
     expect(font.postscriptName).toBe("EBGaramond-Regular");
     expect(font.familyName).toBe("EB Garamond");
+  });
+
+  it("theBundledItalicIsTheFamilysItalic", () => {
+    const font = fontkit.openSync(italicPath) as fontkit.Font;
+    expect(font.postscriptName).toBe("EBGaramond-Italic");
+    expect(font.familyName).toBe("EB Garamond");
+  });
+
+  it("aPreparatorySyllableIsMeasuredInTheItalic", () => {
+    // Without the italic, a preparatory syllable took the roman's width.
+    expect(ebGaramondMeasurer.width("pedum", "preparatory", 21, GregorianLyricFont.defaultName)).not.toBeCloseTo(
+      ebGaramondMeasurer.width("pedum", "regular", 21, GregorianLyricFont.defaultName),
+      2,
+    );
   });
 
   it("lyricsAndInitialsNameTheFontTheyWereMeasuredIn", () => {

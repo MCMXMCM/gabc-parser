@@ -40,9 +40,10 @@ THE SOFTWARE.
 
 ## EB Garamond
 
-The lyric typeface, `Sources/GABCLyricFont/Resources/EBGaramond-VariableFont_wght.ttf`,
-is Copyright 2017 The EB Garamond Project Authors and is licensed under the
-SIL Open Font License 1.1, not under this package's MIT license. The license
+The lyric typeface, `Sources/GABCLyricFont/Resources/EBGaramond-VariableFont_wght.ttf`
+and its italic, `EBGaramond-Italic-VariableFont_wght.ttf` beside it, is
+Copyright 2017 The EB Garamond Project Authors and is licensed under the SIL
+Open Font License 1.1, not under this package's MIT license. The license
 travels with the font as `Sources/GABCLyricFont/Resources/EBGaramond-OFL.txt`;
-the Kotlin `gabc-lyric-font` library carries the same two files as Android
+the Kotlin `gabc-lyric-font` library carries the same three files as Android
 assets.

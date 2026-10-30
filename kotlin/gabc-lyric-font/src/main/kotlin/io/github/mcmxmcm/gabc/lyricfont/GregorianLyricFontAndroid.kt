@@ -9,8 +9,9 @@ import io.github.mcmxmcm.gabc.parser.GregorianLyricStyle
 
 /** The bundled EB Garamond, read from the library's assets once and kept. */
 private object BundledFaces {
-    /** The variable font the Swift package carries, its weight axis from 400 to 800. */
+    /** The variable fonts the Swift package carries, roman and italic, each along its weight axis from 400 to 800. */
     const val ASSET = "EBGaramond-VariableFont_wght.ttf"
+    const val ITALIC_ASSET = "EBGaramond-Italic-VariableFont_wght.ttf"
 
     @Volatile private var faces: Map<GregorianLyricStyle, Typeface>? = null
 
@@ -22,15 +23,16 @@ private object BundledFaces {
     }
 
     private fun load(context: Context): Map<GregorianLyricStyle, Typeface> {
-        fun weight(value: Int) = Typeface.Builder(context.assets, ASSET).setFontVariationSettings("'wght' $value").build()
+        fun weight(value: Int, asset: String = ASSET) =
+            Typeface.Builder(context.assets, asset).setFontVariationSettings("'wght' $value").build()
         val regular = weight(400)
-        // An accented syllable is set bold, as CoreText sets the face's bold trait in the Swift package. The font
-        // has no italic: a preparatory syllable is slanted, which leaves it as wide as the roman.
+        // An accented syllable is set bold, as CoreText sets the face's bold trait in the Swift package, and a
+        // preparatory one in the italic, as CoreText finds it by the italic trait.
         return mapOf(
             GregorianLyricStyle.Regular to regular,
             GregorianLyricStyle.Rubric to regular,
             GregorianLyricStyle.Accented to weight(700),
-            GregorianLyricStyle.Preparatory to Typeface.create(regular, Typeface.ITALIC),
+            GregorianLyricStyle.Preparatory to weight(400, ITALIC_ASSET),
         )
     }
 }

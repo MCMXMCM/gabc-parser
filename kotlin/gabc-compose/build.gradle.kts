@@ -60,6 +60,7 @@ dependencies {
 // The JVM tests measure lyrics as gabc-layout's tests do.
 tasks.withType<Test>().configureEach {
     systemProperty("gabc.lyricFont", rootDir.resolve("../Sources/GABCLyricFont/Resources/EBGaramond-VariableFont_wght.ttf").absolutePath)
+    systemProperty("gabc.lyricItalicFont", rootDir.resolve("../Sources/GABCLyricFont/Resources/EBGaramond-Italic-VariableFont_wght.ttf").absolutePath)
     systemProperty("java.awt.headless", "true")
 }
 

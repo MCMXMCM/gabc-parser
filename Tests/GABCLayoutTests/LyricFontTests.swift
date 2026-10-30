@@ -16,6 +16,29 @@ final class LyricFontTests: XCTestCase {
         XCTAssertEqual(CTFontCopyFamilyName(font) as String, "EB Garamond")
     }
 
+    func testTheBundledItalicIsTheFamilysItalic() throws {
+        let regular = CTFontCreateWithName(GregorianLyricFont.defaultName as CFString, 21, nil)
+        let italic = try XCTUnwrap(
+            CTFontCreateCopyWithSymbolicTraits(regular, 21, nil, .traitItalic, .traitItalic)
+        )
+        XCTAssertEqual(CTFontCopyPostScriptName(italic) as String, "EBGaramond-Italic")
+        XCTAssertEqual(CTFontCopyFamilyName(italic) as String, "EB Garamond")
+    }
+
+    func testAPreparatorySyllableIsMeasuredInTheItalic() throws {
+        // Without the italic, a preparatory syllable took the roman's width.
+        func width(_ gabc: String) throws -> CGFloat {
+            let score = try GregorianScoreParser.parse(gabc: gabc)
+            let layout = GregorianEngravingLayoutEngine().layout(score: score, width: 390)
+            return try XCTUnwrap(layout.lyrics.first { $0.text == "pedum" }).width
+        }
+        XCTAssertNotEqual(
+            try width("%% (c4) _pedum_(g) (::)"),
+            try width("%% (c4) pedum(g) (::)"),
+            accuracy: 0.01
+        )
+    }
+
     func testLyricsAndInitialsNameTheFontTheyWereMeasuredIn() throws {
         let score = try GregorianScoreParser.parse(gabc: "%% (c4) Cla(f)ma(g)vé(h)runt(i) iu(j)sti(i) (::)")
         let engine = GregorianEngravingLayoutEngine()
